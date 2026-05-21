@@ -1,0 +1,30 @@
+name: ai_study_windows
+description: "Phần mềm Gia sư AI trên Windows."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  http: ^1.6.0
+  file_picker: ^11.0.2
+  flutter_markdown: ^0.7.7+1
+  shared_preferences: ^2.5.5
+  flutter_local_notifications: ^16.3.0
+  intl: ^0.20.2
+  flutter_tts: ^4.2.5
+  google_fonts: ^8.0.2
+  audioplayers: ^6.6.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

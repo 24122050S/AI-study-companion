@@ -1,0 +1,18 @@
+# Chặn các file chứa mật khẩu, API key cá nhân
+.env
+firebase-key.json
+test_api.py
+
+# Chặn cơ sở dữ liệu và vector DB local của bạn
+*.db
+*.sqlite3
+my_vector_db/
+
+# Chặn các file rác hệ thống và thư mục ẩn của Python/Flutter
+__pycache__/
+*.pyc
+.dart_tool/
+.build/
+build/
+.history/
+.env.local
