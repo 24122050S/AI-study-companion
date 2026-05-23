@@ -11,7 +11,7 @@ class RoadmapScreen extends StatefulWidget {
 }
 
 class _RoadmapScreenState extends State<RoadmapScreen> {
-  final String apiUrl = "http://10.0.195.105:8000";
+  final String apiUrl = "http://localhost:8000";
   List<dynamic> _roadmap = [];
   bool _isLoading = false;
 

@@ -11,7 +11,7 @@ class FileHistoryScreen extends StatefulWidget {
 }
 
 class _FileHistoryScreenState extends State<FileHistoryScreen> {
-  final String apiUrl = "http://10.0.195.105:8000";
+  final String apiUrl = "http://localhost:8000";
   List<dynamic> _files = [];
   bool _isLoading = false;
 

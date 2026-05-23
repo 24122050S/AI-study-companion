@@ -12,7 +12,7 @@ class HistoryScreen extends StatefulWidget {
 }
 
 class _HistoryScreenState extends State<HistoryScreen> {
-  final String apiUrl = "http://10.0.195.105:8000";
+  final String apiUrl = "http://localhost:8000";
   List<dynamic> _history = [];
   bool _isLoading = false;
 

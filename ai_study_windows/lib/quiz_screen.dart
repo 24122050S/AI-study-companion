@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async'; 
-import 'package:flutter_markdown/flutter_markdown.dart'; // THÊM ĐỂ HIỂN THỊ BÁO CÁO CỦA AI ĐẸP HƠN
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'quiz_review_screen.dart';
 
 class QuizScreen extends StatefulWidget {
@@ -11,7 +11,8 @@ class QuizScreen extends StatefulWidget {
   final int timeLimit; 
   final String username; 
   final String difficulty;
-  final List<dynamic>? preloadedQuestions; // THÊM: Biến này dùng để nhận thẳng Đề Ôn Tập từ AI
+  final String notebookId; // 👈 THÊM: Quản lý theo dự án
+  final List<dynamic>? preloadedQuestions; 
 
   const QuizScreen({
     super.key, 
@@ -19,8 +20,9 @@ class QuizScreen extends StatefulWidget {
     required this.numQuestions, 
     required this.timeLimit,
     required this.username,
+    required this.notebookId, // 👈 BẮT BUỘC TRUYỀN VÀO
     this.difficulty = "Trung bình",
-    this.preloadedQuestions, // Khởi tạo
+    this.preloadedQuestions, 
   });
 
   @override
@@ -28,7 +30,7 @@ class QuizScreen extends StatefulWidget {
 }
 
 class _QuizScreenState extends State<QuizScreen> {
-  final String apiUrl = "http://10.0.195.105:8000";
+  final String apiUrl = "http://localhost:8000";
   List<dynamic> _questions = [];
   bool _isLoading = false;
   bool _isFinished = false;
@@ -73,8 +75,6 @@ class _QuizScreenState extends State<QuizScreen> {
       _secondsRemaining = widget.timeLimit;
     });
 
-    // 🚀 TÍNH NĂNG MỚI: Nếu màn hình này được gọi để "Khắc phục lỗi", 
-    // nó sẽ xài luôn bộ đề AI gửi vào mà không cần gọi hàm tạo mới.
     if (widget.preloadedQuestions != null && widget.preloadedQuestions!.isNotEmpty) {
       setState(() {
         _questions = widget.preloadedQuestions!;
@@ -90,6 +90,7 @@ class _QuizScreenState extends State<QuizScreen> {
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
           "user_id": widget.username, 
+          "notebook_id": widget.notebookId, // 👈 GỬI THÊM NOTEBOOK ID LÊN BACKEND
           "num_questions": widget.numQuestions, 
           "difficulty": widget.difficulty
         }),
@@ -113,9 +114,7 @@ class _QuizScreenState extends State<QuizScreen> {
     setState(() => _isLoading = false);
   }
 
-  // ================= TÍNH NĂNG MỚI: BẮT MẠCH AI =================
   Future<void> _analyzeWeakness() async {
-    // 1. Lọc ra những câu học sinh làm sai
     List<String> wrongQuestions = [];
     for (int i = 0; i < _questions.length; i++) {
       if (_selectedAnswers[i] != _questions[i]['answer']) {
@@ -123,9 +122,8 @@ class _QuizScreenState extends State<QuizScreen> {
       }
     }
 
-    if (wrongQuestions.isEmpty) return; // Nếu đúng hết thì thôi
+    if (wrongQuestions.isEmpty) return; 
 
-    // 2. Hiện hiệu ứng Loading
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -133,25 +131,24 @@ class _QuizScreenState extends State<QuizScreen> {
     );
 
     try {
-      // 3. Gửi câu sai lên Backend
       final response = await http.post(
         Uri.parse("$apiUrl/api/analyze_weakness"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
           "user_id": widget.username,
+          "notebook_id": widget.notebookId, // 👈 GỬI THÊM NOTEBOOK ID ĐỂ AI ĐỌC ĐÚNG FILE
           "wrong_questions": wrongQuestions,
         }),
       );
 
       if (!mounted) return;
-      Navigator.pop(context); // Tắt Loading
+      Navigator.pop(context); 
 
       if (response.statusCode == 200) {
         final data = jsonDecode(utf8.decode(response.bodyBytes))['data'];
         String report = data['report'] ?? "Không có báo cáo.";
         List<dynamic> remedialQuiz = data['quiz'] ?? [];
 
-        // 4. Mở Bảng báo cáo
         _showReportDialog(report, remedialQuiz);
       } else {
         _showError("Lỗi phân tích từ Server.");
@@ -180,7 +177,7 @@ class _QuizScreenState extends State<QuizScreen> {
           width: 400,
           child: SingleChildScrollView(
             child: MarkdownBody(
-              data: report, // Render Báo Cáo có Markdown in đậm/in nghiêng của AI
+              data: report,
               styleSheet: MarkdownStyleSheet(
                 p: const TextStyle(fontSize: 15, height: 1.5, color: Colors.black87),
               ),
@@ -190,8 +187,8 @@ class _QuizScreenState extends State<QuizScreen> {
         actions: [
           TextButton(
             onPressed: () {
-              Navigator.pop(context); // Tắt báo cáo
-              Navigator.pop(context); // Trở về trang chủ
+              Navigator.pop(context); 
+              Navigator.pop(context); 
             },
             child: const Text("Bỏ qua", style: TextStyle(color: Colors.grey)),
           ),
@@ -201,18 +198,18 @@ class _QuizScreenState extends State<QuizScreen> {
               label: const Text("Làm bài khắc phục", style: TextStyle(color: Colors.white)),
               style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
               onPressed: () {
-                Navigator.pop(context); // Tắt bảng báo cáo
+                Navigator.pop(context); 
                 
-                // Mở bài thi mới bằng cách Ghi Đè (Replace) lên bài thi cũ
                 Navigator.pushReplacement(
                   context,
                   MaterialPageRoute(
                     builder: (context) => QuizScreen(
                       modeName: "Ôn tập lỗi sai",
                       numQuestions: remedialQuiz.length,
-                      timeLimit: 0, // Bài khắc phục không cần tính giờ
+                      timeLimit: 0, 
                       username: widget.username,
-                      preloadedQuestions: remedialQuiz, // Bơm thẳng đề mới vào
+                      notebookId: widget.notebookId, // 👈 TIẾP TỤC TRUYỀN ĐI KHI LÀM ĐỀ KHẮC PHỤC
+                      preloadedQuestions: remedialQuiz, 
                     ),
                   ),
                 );
@@ -222,7 +219,6 @@ class _QuizScreenState extends State<QuizScreen> {
       ),
     );
   }
-  // ==============================================================
 
   void _submitQuiz() async {
     _timer?.cancel();
@@ -312,15 +308,14 @@ class _QuizScreenState extends State<QuizScreen> {
                 child: const Text("Làm lại", style: TextStyle(color: Colors.white)),
               ),
 
-              // CHỈ HIỆN NÚT PHÂN TÍCH NẾU NGƯỜI DÙNG CÓ CÂU LÀM SAI
               if (score < _questions.length)
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
                   icon: const Icon(Icons.auto_awesome, color: Colors.white, size: 18),
                   label: const Text("Bắt mạch điểm yếu", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                   onPressed: () {
-                    Navigator.pop(context); // Tắt thông báo điểm
-                    _analyzeWeakness(); // Bắt đầu phân tích
+                    Navigator.pop(context); 
+                    _analyzeWeakness(); 
                   },
                 ),
             ],
@@ -343,7 +338,7 @@ class _QuizScreenState extends State<QuizScreen> {
   @override
   Widget build(BuildContext context) {
     Color themeColor = widget.timeLimit > 0 ? Colors.orange : Colors.green;
-    if (widget.modeName == "Ôn tập lỗi sai") themeColor = Colors.purple; // Màu riêng cho bài khắc phục
+    if (widget.modeName == "Ôn tập lỗi sai") themeColor = Colors.purple; 
 
     return Scaffold(
       appBar: AppBar(

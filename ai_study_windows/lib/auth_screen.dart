@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'workspace_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'home_screen.dart';
 
@@ -12,7 +13,7 @@ class AuthScreen extends StatefulWidget {
 }
 
 class _AuthScreenState extends State<AuthScreen> {
-  final String apiUrl = "http://10.0.195.105:8000";
+  final String apiUrl = "http://localhost:8000";
   bool _isLoginMode = true; // True = Đăng nhập, False = Đăng ký
   final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
@@ -45,9 +46,17 @@ class _AuthScreenState extends State<AuthScreen> {
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('username', data['username']);
           
+          // 🔐 THÊM DÒNG NÀY ĐỂ LƯU TOKEN:
+          await prefs.setString('token', data['token']); 
+          
           if (!mounted) return;
           // Chuyển sang màn hình chính
-          Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const HomeScreen()));
+          Navigator.pushReplacement(
+            context, 
+            MaterialPageRoute(
+              builder: (context) => WorkspaceScreen(username: data['username'])
+            )
+          );
         } else {
           _showMessage("Đăng ký thành công! Hãy đăng nhập.", isError: false);
           setState(() => _isLoginMode = true); // Đổi sang tab đăng nhập
