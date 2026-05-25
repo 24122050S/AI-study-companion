@@ -13,6 +13,8 @@ import 'history_screen.dart';
 import 'flashcard_screen.dart';
 import 'auth_screen.dart';
 import 'roadmap_screen.dart';
+import 'api_constants.dart';
+import 'quiz_history_screen.dart'; // 👈 NÂNG CẤP: Tạo file riêng để quản lý URL API
 
 class HomeScreen extends StatefulWidget {
   final String notebookId;    // 👈 Nhận ID của dự án
@@ -46,7 +48,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final AudioPlayer _audioPlayer = AudioPlayer();
 
   String _username = "An Nguyen"; 
-  final String apiUrl = "http://localhost:8000"; 
+  
 
   @override
   void initState() {
@@ -64,14 +66,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _speak(String text) async {
     String cleanText = text.replaceAll(RegExp(r'[*#_`]'), ''); 
-    String ttsUrl = "$apiUrl/api/tts?text=${Uri.encodeComponent(cleanText)}";
+    String ttsUrl = "${ApiConstants.baseUrl}/api/tts?text=${Uri.encodeComponent(cleanText)}";
     await _audioPlayer.play(UrlSource(ttsUrl));
   }
 
   Future<void> _quickSaveNote(String content) async {
     try {
       final response = await http.post(
-        Uri.parse("$apiUrl/api/notes"),
+        Uri.parse("${ApiConstants.baseUrl}/api/notes"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({"user_id": _username, "title": "Kiến thức từ AI", "content": content}),
       );
@@ -95,7 +97,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _fetchChatHistory() async {
     setState(() => _isChatLoading = true);
     try {
-      final response = await http.get(Uri.parse("$apiUrl/api/chat_history/$_username/${widget.notebookId}"));
+      final response = await http.get(Uri.parse("${ApiConstants.baseUrl}/api/chat_history/$_username/${widget.notebookId}"));
       if (response.statusCode == 200) {
         final data = jsonDecode(utf8.decode(response.bodyBytes))['data'] as List;
         setState(() {
@@ -120,7 +122,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _fetchDashboardStats() async {
     try {
-      final response = await http.get(Uri.parse("$apiUrl/api/dashboard/$_username"));
+      final response = await http.get(Uri.parse("${ApiConstants.baseUrl}/api/dashboard/$_username"));
       if (response.statusCode == 200) {
         final data = jsonDecode(utf8.decode(response.bodyBytes));
         setState(() {
@@ -187,7 +189,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _fetchFiles() async {
     setState(() => _isFilesLoading = true);
     try {
-      final response = await http.get(Uri.parse("$apiUrl/api/files/$_username"));
+      final response = await http.get(Uri.parse("${ApiConstants.baseUrl}/api/files/$_username/${widget.notebookId}"));
       if (response.statusCode == 200) {
         setState(() => _uploadedFiles = jsonDecode(utf8.decode(response.bodyBytes)));
       }
@@ -197,7 +199,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _deleteFile(int fileId) async {
     try {
-      final response = await http.delete(Uri.parse("$apiUrl/api/files/$fileId"));
+      final response = await http.delete(Uri.parse("${ApiConstants.baseUrl}/api/files/$fileId"));
       if (response.statusCode == 200) {
         _fetchFiles(); 
         if (!mounted) return; 
@@ -207,12 +209,16 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _uploadPDF() async {
-    FilePickerResult? result = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: ['pdf'], withData: true);
+    FilePickerResult? result = await FilePicker.pickFiles(
+      type: FileType.custom, 
+      allowedExtensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'txt', 'jpg', 'jpeg', 'png'], 
+      withData: true
+    );
     if (result == null) return;
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Đang gửi file cho AI học...')));
 
     try {
-      final request = http.MultipartRequest('POST', Uri.parse('$apiUrl/api/upload'));
+      final request = http.MultipartRequest('POST', Uri.parse('${ApiConstants.baseUrl}/api/upload'));
       request.fields['user_id'] = _username;
       request.fields['notebook_id'] = widget.notebookId;
       
@@ -246,7 +252,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     try {
       // Khởi tạo Request để sẵn sàng lắng nghe luồng (Stream)
-      var request = http.Request('POST', Uri.parse("$apiUrl/api/chat"));
+      var request = http.Request('POST', Uri.parse("${ApiConstants.baseUrl}/api/chat"));
       request.headers['Content-Type'] = 'application/json';
       request.body = jsonEncode({
         "user_id": _username, 
@@ -310,7 +316,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     try {
       final response = await http.get(
-        Uri.parse("$apiUrl/api/reference?user_id=$_username&filename=$filename&page=$page&notebook_id=${widget.notebookId}"),
+        Uri.parse("${ApiConstants.baseUrl}/api/reference?user_id=$_username&filename=$filename&page=$page&notebook_id=${widget.notebookId}"),
       );
       
       if (!mounted) return;
@@ -648,7 +654,7 @@ class _HomeScreenState extends State<HomeScreen> {
       child: ListView(
         children: [
           _buildActionItem("Lộ trình học AI", Icons.map, const Color(0xFFFFF3E0), Colors.deepOrange, () {
-             Navigator.push(context, MaterialPageRoute(builder: (context) => RoadmapScreen(username: _username)));
+             Navigator.push(context, MaterialPageRoute(builder: (context) => RoadmapScreen(username: _username, notebookId: widget.notebookId)));
           }),
           _buildActionItem("Tạo Quiz", Icons.settings_suggest, const Color(0xFFE3F9F1), Colors.teal, () {
             _showQuizSettingsDialog(); 
@@ -668,7 +674,7 @@ class _HomeScreenState extends State<HomeScreen> {
              _fetchDashboardStats(); 
           }),
           _buildActionItem("Flashcards", Icons.style, const Color(0xFFF3EFFF), Colors.purple, () {
-             Navigator.push(context, MaterialPageRoute(builder: (context) => FlashcardScreen(username: _username)));
+             Navigator.push(context, MaterialPageRoute(builder: (context) => FlashcardScreen(username: _username, notebookId: widget.notebookId)));
           }),
           _buildActionItem("Sổ tay ghi nhớ", Icons.book, const Color(0xFFE8F5E9), Colors.green, () {
              Navigator.push(context, MaterialPageRoute(
@@ -678,8 +684,12 @@ class _HomeScreenState extends State<HomeScreen> {
                )
              ));
           }),
-          _buildActionItem("Bảng điểm & Xếp hạng", Icons.emoji_events, const Color(0xFFFFF8E1), Colors.orange, () {
-             Navigator.push(context, MaterialPageRoute(builder: (context) => HistoryScreen(username: _username)));
+          _buildActionItem("Lịch sử & Bảng điểm", Icons.emoji_events, const Color(0xFFFFF8E1), Colors.orange, () {
+             // Mở trang Lịch sử Quiz chúng ta vừa tạo
+             Navigator.push(context, MaterialPageRoute(builder: (context) => QuizHistoryScreen(
+               username: _username,
+               notebookId: widget.notebookId,
+             )));
           }),
         ],
       ),

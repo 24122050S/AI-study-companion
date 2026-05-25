@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'api_constants.dart';
 
 class NoteScreen extends StatefulWidget {
   final String username;
@@ -18,7 +19,7 @@ class NoteScreen extends StatefulWidget {
 }
 
 class _NoteScreenState extends State<NoteScreen> {
-  final String apiUrl = "http://localhost:8000";
+  
   List<dynamic> _notes = [];
   bool _isLoading = false;
 
@@ -31,7 +32,7 @@ class _NoteScreenState extends State<NoteScreen> {
   Future<void> _fetchNotes() async {
     setState(() => _isLoading = true);
     try {
-      final response = await http.get(Uri.parse("$apiUrl/api/notes/${widget.username}"));
+      final response = await http.get(Uri.parse("${ApiConstants.baseUrl}/api/notes/${widget.username}"));
       if (response.statusCode == 200) {
         setState(() {
           _notes = jsonDecode(utf8.decode(response.bodyBytes));
@@ -45,7 +46,7 @@ class _NoteScreenState extends State<NoteScreen> {
 
   Future<void> _deleteNote(int noteId) async {
     try {
-      final response = await http.delete(Uri.parse("$apiUrl/api/notes/$noteId"));
+      final response = await http.delete(Uri.parse("${ApiConstants.baseUrl}/api/notes/$noteId"));
       if (response.statusCode == 200) {
         _fetchNotes();
         if (!mounted) return;
@@ -70,7 +71,7 @@ class _NoteScreenState extends State<NoteScreen> {
     try {
       // 👇 NÂNG CẤP: ĐÍNH KÈM THÊM NOTEBOOK ID VÀO ĐUÔI LINK GET REQUEST
       final response = await http.get(
-        Uri.parse("$apiUrl/api/reference?user_id=${widget.username}&filename=$filename&page=$page&notebook_id=${widget.notebookId}"),
+        Uri.parse("${ApiConstants.baseUrl}/api/reference?user_id=${widget.username}&filename=$filename&page=$page&notebook_id=${widget.notebookId}"),
       );
       
       if (!mounted) return;

@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:async'; 
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'quiz_review_screen.dart';
+import 'api_constants.dart';
 
 class QuizScreen extends StatefulWidget {
   final String modeName;
@@ -30,7 +31,7 @@ class QuizScreen extends StatefulWidget {
 }
 
 class _QuizScreenState extends State<QuizScreen> {
-  final String apiUrl = "http://localhost:8000";
+  
   List<dynamic> _questions = [];
   bool _isLoading = false;
   bool _isFinished = false;
@@ -86,7 +87,7 @@ class _QuizScreenState extends State<QuizScreen> {
 
     try {
       final response = await http.post(
-        Uri.parse("$apiUrl/api/quiz"),
+        Uri.parse("${ApiConstants.baseUrl}/api/quiz"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
           "user_id": widget.username, 
@@ -132,7 +133,7 @@ class _QuizScreenState extends State<QuizScreen> {
 
     try {
       final response = await http.post(
-        Uri.parse("$apiUrl/api/analyze_weakness"),
+        Uri.parse("${ApiConstants.baseUrl}/api/analyze_weakness"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
           "user_id": widget.username,
@@ -235,7 +236,7 @@ class _QuizScreenState extends State<QuizScreen> {
 
     try {
       await http.post(
-        Uri.parse("$apiUrl/api/score"),
+        Uri.parse("${ApiConstants.baseUrl}/api/score"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
           "user_id": widget.username,

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'api_constants.dart';
 
 class FileHistoryScreen extends StatefulWidget {
   final String username;
@@ -11,7 +12,7 @@ class FileHistoryScreen extends StatefulWidget {
 }
 
 class _FileHistoryScreenState extends State<FileHistoryScreen> {
-  final String apiUrl = "http://localhost:8000";
+  
   List<dynamic> _files = [];
   bool _isLoading = false;
 
@@ -25,7 +26,7 @@ class _FileHistoryScreenState extends State<FileHistoryScreen> {
   Future<void> _fetchFiles() async {
     setState(() => _isLoading = true);
     try {
-      final response = await http.get(Uri.parse("$apiUrl/api/files/${widget.username}"));
+      final response = await http.get(Uri.parse("${ApiConstants.baseUrl}/api/files/${widget.username}"));
       if (response.statusCode == 200) {
         setState(() => _files = jsonDecode(utf8.decode(response.bodyBytes)));
       }
@@ -38,7 +39,7 @@ class _FileHistoryScreenState extends State<FileHistoryScreen> {
   // Xóa 1 file
   Future<void> _deleteFile(int fileId) async {
     try {
-      final response = await http.delete(Uri.parse("$apiUrl/api/files/$fileId"));
+      final response = await http.delete(Uri.parse("${ApiConstants.baseUrl}/api/files/$fileId"));
       if (response.statusCode == 200) {
         _fetchFiles(); // Tải lại danh sách
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Đã xóa khỏi danh sách!', style: TextStyle(color: Colors.white)), backgroundColor: Colors.grey));
@@ -70,7 +71,7 @@ class _FileHistoryScreenState extends State<FileHistoryScreen> {
     if (confirm) {
       setState(() => _isLoading = true);
       try {
-        final response = await http.delete(Uri.parse("$apiUrl/api/files/reset/${widget.username}"));
+        final response = await http.delete(Uri.parse("${ApiConstants.baseUrl}/api/files/reset/${widget.username}"));
         if (response.statusCode == 200) {
           _fetchFiles();
           if (!mounted) return;

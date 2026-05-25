@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'workspace_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'home_screen.dart';
+import 'api_constants.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -13,7 +14,7 @@ class AuthScreen extends StatefulWidget {
 }
 
 class _AuthScreenState extends State<AuthScreen> {
-  final String apiUrl = "http://localhost:8000";
+
   bool _isLoginMode = true; // True = Đăng nhập, False = Đăng ký
   final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
@@ -33,7 +34,7 @@ class _AuthScreenState extends State<AuthScreen> {
     final endpoint = _isLoginMode ? "/api/login" : "/api/register";
     try {
       final response = await http.post(
-        Uri.parse("$apiUrl$endpoint"),
+        Uri.parse("${ApiConstants.baseUrl}$endpoint"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({"username": username, "password": password}),
       );

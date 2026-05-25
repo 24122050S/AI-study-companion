@@ -1,17 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'api_constants.dart';
 
 class FlashcardScreen extends StatefulWidget {
   final String username;
-  const FlashcardScreen({super.key, required this.username});
+  final String notebookId;
+  const FlashcardScreen({super.key, required this.username, required this.notebookId});
 
   @override
   State<FlashcardScreen> createState() => _FlashcardScreenState();
 }
 
 class _FlashcardScreenState extends State<FlashcardScreen> {
-  final String apiUrl = "http://localhost:8000";
+  
   List<dynamic> _flashcards = [];
   bool _isLoading = false;
   
@@ -34,9 +36,9 @@ class _FlashcardScreenState extends State<FlashcardScreen> {
 
     try {
       final response = await http.post(
-        Uri.parse("$apiUrl/api/flashcards"),
+        Uri.parse("${ApiConstants.baseUrl}/api/flashcards"),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": widget.username, "num_cards": 5}),
+        body: jsonEncode({"user_id": widget.username, "num_cards": 5, "notebook_id": widget.notebookId}),
       );
 
       if (response.statusCode == 200) {

@@ -1,17 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'api_constants.dart';
 
 class RoadmapScreen extends StatefulWidget {
   final String username;
-  const RoadmapScreen({super.key, required this.username});
+  final String notebookId;
+  const RoadmapScreen({super.key, required this.username, required this.notebookId});
 
   @override
   State<RoadmapScreen> createState() => _RoadmapScreenState();
 }
 
 class _RoadmapScreenState extends State<RoadmapScreen> {
-  final String apiUrl = "http://localhost:8000";
+  
   List<dynamic> _roadmap = [];
   bool _isLoading = false;
 
@@ -25,9 +27,9 @@ class _RoadmapScreenState extends State<RoadmapScreen> {
     setState(() => _isLoading = true);
     try {
       final response = await http.post(
-        Uri.parse("$apiUrl/api/roadmap"),
+        Uri.parse("${ApiConstants.baseUrl}/api/roadmap"),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": widget.username}),
+        body: jsonEncode({"user_id": widget.username, "notebook_id": widget.notebookId}),
       );
 
       if (response.statusCode == 200) {

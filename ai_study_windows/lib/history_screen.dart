@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'package:intl/intl.dart'; // Thư viện để định dạng ngày tháng
+import 'package:intl/intl.dart'; 
+import 'api_constants.dart';// Thư viện để định dạng ngày tháng
 
 class HistoryScreen extends StatefulWidget {
   final String username;
@@ -12,7 +13,7 @@ class HistoryScreen extends StatefulWidget {
 }
 
 class _HistoryScreenState extends State<HistoryScreen> {
-  final String apiUrl = "http://localhost:8000";
+  
   List<dynamic> _history = [];
   bool _isLoading = false;
 
@@ -25,7 +26,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   Future<void> _fetchHistory() async {
     setState(() => _isLoading = true);
     try {
-      final response = await http.get(Uri.parse("$apiUrl/api/history/${widget.username}"));
+      final response = await http.get(Uri.parse("${ApiConstants.baseUrl}/api/history/${widget.username}"));
       if (response.statusCode == 200) {
         setState(() {
           _history = jsonDecode(utf8.decode(response.bodyBytes));
