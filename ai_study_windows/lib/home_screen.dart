@@ -14,11 +14,13 @@ import 'flashcard_screen.dart';
 import 'auth_screen.dart';
 import 'roadmap_screen.dart';
 import 'api_constants.dart';
-import 'quiz_history_screen.dart'; // 👈 NÂNG CẤP: Tạo file riêng để quản lý URL API
+import 'quiz_history_screen.dart'; 
+import 'flashcard_history_screen.dart';
+import 'study_history_screen.dart'; 
 
 class HomeScreen extends StatefulWidget {
-  final String notebookId;    // 👈 Nhận ID của dự án
-  final String notebookTitle; // 👈 Nhận Tên của dự án để hiển thị cho đẹp
+  final String notebookId;    
+  final String notebookTitle; 
 
   const HomeScreen({
     super.key, 
@@ -46,6 +48,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // --- TRÌNH PHÁT NHẠC (ĐỌC GIỌNG AI EDGE TTS) ---
   final AudioPlayer _audioPlayer = AudioPlayer();
+  String? _currentlyPlayingText;
 
   String _username = "An Nguyen"; 
   
@@ -54,6 +57,14 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _loadUser();
+
+    _audioPlayer.onPlayerComplete.listen((event) {
+      if (mounted) {
+        setState(() {
+          _currentlyPlayingText = null;
+        });
+      }
+    });
   }
 
   @override
@@ -64,7 +75,26 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  Future<void> _speak(String text) async {
+  Future<void> _toggleAudio(String text) async {
+    // 1. NẾU BẤM LẠI VÀO ĐÚNG CÂU ĐANG ĐỌC -> DỪNG LẠI
+    if (_currentlyPlayingText == text && _audioPlayer.state == PlayerState.playing) {
+      await _audioPlayer.stop();
+      setState(() {
+        _currentlyPlayingText = null;
+      });
+      return; 
+    }
+
+    // 2. NẾU ĐANG ĐỌC CÂU KHÁC MÀ BẤM CÂU MỚI -> TẮT CÂU CŨ TRƯỚC
+    if (_audioPlayer.state == PlayerState.playing) {
+      await _audioPlayer.stop();
+    }
+
+    // 3. PHÁT ÂM THANH CÂU MỚI
+    setState(() {
+      _currentlyPlayingText = text;
+    });
+
     String cleanText = text.replaceAll(RegExp(r'[*#_`]'), ''); 
     String ttsUrl = "${ApiConstants.baseUrl}/api/tts?text=${Uri.encodeComponent(cleanText)}";
     await _audioPlayer.play(UrlSource(ttsUrl));
@@ -75,7 +105,12 @@ class _HomeScreenState extends State<HomeScreen> {
       final response = await http.post(
         Uri.parse("${ApiConstants.baseUrl}/api/notes"),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": _username, "title": "Kiến thức từ AI", "content": content}),
+        body: jsonEncode({
+          "user_id": _username, 
+          "notebook_id": widget.notebookId, 
+          "title": "Kiến thức từ AI", 
+          "content": content
+        }),
       );
       if (response.statusCode == 200) {
         if (!mounted) return;
@@ -103,10 +138,8 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() {
           _messages.clear(); 
           if (data.isEmpty) {
-            // Nếu chưa chat bao giờ thì mới hiện câu chào
-            _messages.add({"sender": "ai", "text": "Xin chào! Mình là AI Companion. Bạn hãy tải tài liệu lên và hỏi mình bất cứ điều gì nhé! 🤖"});
+            _messages.add({"sender": "ai", "text": "Xin chào! Mình là AI Companion. Bạn hãy tải tài liệu lên và hỏi mình bất cứ điều gì nhé!"});
           } else {
-            // Nếu có lịch sử thì load toàn bộ ra
             for (var item in data) {
               _messages.add({"sender": item['sender'], "text": item['message']});
             }
@@ -251,7 +284,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _scrollToBottom();
 
     try {
-      // Khởi tạo Request để sẵn sàng lắng nghe luồng (Stream)
       var request = http.Request('POST', Uri.parse("${ApiConstants.baseUrl}/api/chat"));
       request.headers['Content-Type'] = 'application/json';
       request.body = jsonEncode({
@@ -260,21 +292,19 @@ class _HomeScreenState extends State<HomeScreen> {
         "message": text
         });
 
-      // Bắt đầu gửi và mở kênh nhận luồng dữ liệu
       var response = await http.Client().send(request);
 
       if (response.statusCode == 200) {
         setState(() {
-          _messages.removeLast(); // Xóa mác "Đang suy nghĩ..."
-          _messages.add({"sender": "ai", "text": ""}); // Tạo bong bóng rỗng để hứng chữ
+          _messages.removeLast(); 
+          _messages.add({"sender": "ai", "text": ""}); 
         });
 
-        // 🔥 PHÉP MÀU NẰM Ở ĐÂY: Nhận từng mảnh văn bản (chunk) và nối vào đuôi
         await for (var chunk in response.stream.transform(utf8.decoder)) {
           setState(() {
             _messages.last["text"] = _messages.last["text"]! + chunk;
           });
-          _scrollToBottom(); // Cuộn màn hình xuống liên tục theo chữ
+          _scrollToBottom(); 
         }
       } else {
         setState(() {
@@ -305,7 +335,40 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // ================= TÍNH NĂNG MỚI: HIỂN THỊ LÝ THUYẾT GỐC (Ở TRANG CHỦ) =================
+  String _cleanAndFormatTheory(String rawText) {
+    // 1. Tàng hình chữ "Dữ liệu JSON"
+    String result = rawText.replaceAll("Dữ liệu JSON", "");
+
+    // 2. Tìm khối ngoặc nhọn { ... } và hô biến nó thành Markdown đẹp mắt
+    final RegExp jsonRegExp = RegExp(r'\{[\s\S]*?\}');
+    
+    result = result.replaceAllMapped(jsonRegExp, (match) {
+      String jsonString = match.group(0) ?? "";
+      try {
+        Map<String, dynamic> jsonData = jsonDecode(jsonString);
+        String beautifulText = "\n";
+        
+        jsonData.forEach((key, value) {
+          // Làm sạch cái Key (VD: "nội_dung_cách_mạng" -> "Nội dung cách mạng")
+          String prettyKey = key.replaceAll('_', ' ');
+          if (prettyKey.isNotEmpty) {
+            prettyKey = prettyKey[0].toUpperCase() + prettyKey.substring(1);
+          }
+          
+          // Gắn Icon và in đậm tiêu đề
+          beautifulText += "🔹 **$prettyKey**: $value\n\n";
+        });
+        
+        return beautifulText;
+      } catch (e) {
+        // Nếu lỡ JSON bị rách/lỗi thì bọc nó vào khung xám cho gọn
+        return "```text\n$jsonString\n```";
+      }
+    });
+
+    return result.trim();
+  }
+
   Future<void> _showReferenceTheory(String filename, int page) async {
     showDialog(
       context: context,
@@ -320,12 +383,12 @@ class _HomeScreenState extends State<HomeScreen> {
       );
       
       if (!mounted) return;
-      Navigator.pop(context); // Tắt loading
+      Navigator.pop(context); 
 
       String theoryContent = "Lỗi không tải được dữ liệu.";
       if (response.statusCode == 200) {
         final data = jsonDecode(utf8.decode(response.bodyBytes));
-        theoryContent = data['data'];
+        theoryContent = _cleanAndFormatTheory(data['data']); // 👈 Kích hoạt bộ lọc
       }
 
       showDialog(
@@ -358,12 +421,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 5)]
               ),
               child: SingleChildScrollView(
-                // 👇 THAY THẺ TEXT THÀNH MARKDOWN BODY ĐỂ HIỂN THỊ BẢNG VÀ CHỮ IN ĐẬM
                 child: MarkdownBody(
                   data: theoryContent,
                   styleSheet: MarkdownStyleSheet(
                     p: const TextStyle(fontSize: 15, height: 1.6, color: Colors.black87),
-                    // Có thể thêm style cho bảng nếu muốn
                     tableBorder: TableBorder.all(color: Colors.grey.shade300, width: 1),
                     tableCellsPadding: const EdgeInsets.all(8),
                   ),
@@ -386,7 +447,6 @@ class _HomeScreenState extends State<HomeScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Lỗi kết nối máy chủ!")));
     }
   }
-  // =========================================================================================
 
   @override
   Widget build(BuildContext context) {
@@ -500,6 +560,13 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+  String _formatMarkdownLink(String text) {
+    return text.replaceAllMapped(RegExp(r'\(http://ref/([^)]+)\)'), (match) {
+      String rawPath = match.group(1) ?? '';
+      // Mã hóa link (dấu cách thành %20, v.v...) để Markdown không bị gãy
+      return '(http://ref/${Uri.encodeComponent(rawPath)})';
+    });
+  }
 
   Widget _buildLeftPanel() {
     return _buildPanelContainer(
@@ -572,7 +639,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               MarkdownBody(
-                                data: m['text']!,
+                                data: _formatMarkdownLink(m['text'] ?? ''), // 👈 ĐÃ SỬA
                                 styleSheet: MarkdownStyleSheet(
                                   p: const TextStyle(fontSize: 15, color: Colors.black87),
                                   a: const TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold, decoration: TextDecoration.underline),
@@ -589,17 +656,26 @@ class _HomeScreenState extends State<HomeScreen> {
                                   }
                                 },
                               ),
-                              // Khôi phục nút đọc giọng nói và lưu Sổ tay
                               if (m['text'] != "Đang suy nghĩ...") ...[
                                 const SizedBox(height: 10),
                                 const Divider(color: Colors.black12, height: 1),
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.end,
                                   children: [
-                                    IconButton(
-                                      icon: const Icon(Icons.volume_up, size: 20, color: Colors.orange),
-                                      tooltip: 'Đọc câu trả lời',
-                                      onPressed: () => _speak(m['text']!), 
+                                    // 👇 ĐÃ SỬA: Đổi Icon và Màu sắc tùy theo trạng thái
+                                    Builder(
+                                      builder: (context) {
+                                        bool isPlayingThis = _currentlyPlayingText == m['text'];
+                                        return IconButton(
+                                          icon: Icon(
+                                            isPlayingThis ? Icons.stop_circle : Icons.volume_up, 
+                                            size: 20, 
+                                            color: isPlayingThis ? Colors.redAccent : Colors.orange
+                                          ),
+                                          tooltip: isPlayingThis ? 'Dừng đọc' : 'Đọc câu trả lời',
+                                          onPressed: () => _toggleAudio(m['text']!), // Gọi hàm mới
+                                        );
+                                      }
                                     ),
                                     IconButton(
                                       icon: const Icon(Icons.bookmark_add_outlined, size: 20, color: Colors.teal),
@@ -659,7 +735,6 @@ class _HomeScreenState extends State<HomeScreen> {
           _buildActionItem("Tạo Quiz", Icons.settings_suggest, const Color(0xFFE3F9F1), Colors.teal, () {
             _showQuizSettingsDialog(); 
           }),
-          // TÌM VÀ SỬA ĐOẠN NÀY
           _buildActionItem("Phòng thi ảo", Icons.timer, const Color(0xFFEBF3FF), Colors.blueAccent, () async {
              await Navigator.push(context, MaterialPageRoute(
                builder: (context) => QuizScreen(
@@ -667,7 +742,7 @@ class _HomeScreenState extends State<HomeScreen> {
                  numQuestions: 20, 
                  timeLimit: 900, 
                  username: _username,
-                 difficulty: "Phòng thi ảo", // S
+                 difficulty: "Phòng thi ảo",
                  notebookId: widget.notebookId,
                )
              ));
@@ -680,17 +755,16 @@ class _HomeScreenState extends State<HomeScreen> {
              Navigator.push(context, MaterialPageRoute(
                builder: (context) => NoteScreen(
                  username: _username,
-                 notebookId: widget.notebookId // 🔥 TRUYỀN NOTEBOOK ID SANG CHO SỔ TAY KIỂM TRA NGUỒN
+                 notebookId: widget.notebookId 
                )
              ));
           }),
-          _buildActionItem("Lịch sử & Bảng điểm", Icons.emoji_events, const Color(0xFFFFF8E1), Colors.orange, () {
-             // Mở trang Lịch sử Quiz chúng ta vừa tạo
-             Navigator.push(context, MaterialPageRoute(builder: (context) => QuizHistoryScreen(
+          _buildActionItem("Lịch sử Quiz và Flashcard", Icons.emoji_events, const Color(0xFFFFF8E1), Colors.orange, () {
+             Navigator.push(context, MaterialPageRoute(builder: (context) => StudyHistoryScreen(
                username: _username,
                notebookId: widget.notebookId,
              )));
-          }),
+          }),  
         ],
       ),
     );

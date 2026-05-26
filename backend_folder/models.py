@@ -22,6 +22,7 @@ class AuthRequest(BaseModel):
 
 class NoteRequest(BaseModel):
     user_id: str
+    notebook_id: str
     title: str
     content: str
 

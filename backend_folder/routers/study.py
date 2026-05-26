@@ -129,17 +129,32 @@ async def generate_flashcards(request: Request):
         notebook_id = data.get("notebook_id", "")
         num_cards = data.get("num_cards", 5)
 
-        context = get_active_context("Các thuật ngữ", user_id, str(notebook_id), k_needed=15)
+        # 1. BƠM RANDOM SEED VÀO CÂU LỆNH TÌM KIẾM ĐỂ LẤY VĂN BẢN KHÁC NHAU
+        random_seed = random.randint(1000, 99999)
+        search_query = f"Tìm các thuật ngữ, định nghĩa, từ khóa quan trọng ngẫu nhiên (Mã hạt giống: {random_seed})"
+        
+        context = get_active_context(search_query, user_id, str(notebook_id), k_needed=15)
         if not context: 
             return {"data": [{"term": "Chưa tải PDF", "definition": "Vui lòng tải tài liệu"}]}
             
-        prompt = f"Dựa vào tài liệu tạo {num_cards} flashcard. TÀI LIỆU: {context}\nTrả JSON mảng: [{{\"term\": \"A\", \"definition\": \"B\"}}]"
-        raw_text = call_groq(prompt).replace("```json", "").replace("```", "").strip()
+        # 2. BƠM RANDOM SEED VÀO LỆNH CỦA AI VÀ TĂNG NHIỆT ĐỘ SÁNG TẠO (TEMP = 0.8)
+        prompt = f"""
+        Dựa vào TÀI LIỆU sau, tạo {num_cards} flashcard chứa thuật ngữ và định nghĩa.
+        TÀI LIỆU: {context}
+        
+        CHÚ Ý ĐẶC BIỆT (Mã phiên bản: {random_seed}):
+        - BẮT BUỘC phải bốc ngẫu nhiên các thuật ngữ nằm rải rác sâu bên trong tài liệu. 
+        - TUYỆT ĐỐI KHÔNG lặp lại những khái niệm quen thuộc ở phần mở đầu.
+        
+        YÊU CẦU: Trả JSON mảng thuần túy: [{{"term": "A", "definition": "B"}}]
+        """
+        
+        raw_text = call_groq(prompt, is_chat_mode=False, temp=0.8).replace("```json", "").replace("```", "").strip()
         flashcards = extract_json_array(json.loads(raw_text), ["term", "definition"])
         
-        # LƯU BỘ THẺ MỚI
+        # 3. LƯU BỘ THẺ MỚI VÀO DATABASE
         time_str = datetime.now().strftime("%H:%M %d/%m")
-        deck_title = f"Bộ thẻ {time_str} ({num_cards} từ)"
+        deck_title = f"Bộ Flashcard ({time_str})"
         res = supabase.table("flashcard_decks").insert({
             "user_id": user_id, 
             "notebook_id": int(notebook_id), 

@@ -6,62 +6,52 @@ import 'api_constants.dart';
 class FlashcardScreen extends StatefulWidget {
   final String username;
   final String notebookId;
-  const FlashcardScreen({super.key, required this.username, required this.notebookId});
+  final List<dynamic>? preloadedCards; // 👈 THÊM DÒNG NÀY ĐỂ NHẬN BỘ THẺ CŨ
+
+  const FlashcardScreen({super.key, required this.username, required this.notebookId, this.preloadedCards});
 
   @override
   State<FlashcardScreen> createState() => _FlashcardScreenState();
 }
 
 class _FlashcardScreenState extends State<FlashcardScreen> {
-  
   List<dynamic> _flashcards = [];
   bool _isLoading = false;
-  
   int _currentIndex = 0;
-  bool _isFlipped = false; // Trạng thái lật thẻ (Mặt trước / Mặt sau)
+  bool _isFlipped = false; 
 
   @override
   void initState() {
     super.initState();
-    _fetchFlashcards();
+    // KIỂM TRA: Nếu có bộ thẻ cũ truyền vào thì dùng luôn, không thì gọi AI tạo mới
+    if (widget.preloadedCards != null && widget.preloadedCards!.isNotEmpty) {
+      _flashcards = List.from(widget.preloadedCards!);
+    } else {
+      _fetchFlashcards();
+    }
   }
 
   Future<void> _fetchFlashcards() async {
-    setState(() {
-      _isLoading = true;
-      _flashcards = [];
-      _currentIndex = 0;
-      _isFlipped = false;
-    });
-
+    setState(() { _isLoading = true; _flashcards = []; _currentIndex = 0; _isFlipped = false; });
     try {
       final response = await http.post(
         Uri.parse("${ApiConstants.baseUrl}/api/flashcards"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({"user_id": widget.username, "num_cards": 5, "notebook_id": widget.notebookId}),
       );
-
       if (response.statusCode == 200) {
         final data = jsonDecode(utf8.decode(response.bodyBytes));
-        setState(() {
-          _flashcards = data["data"] ?? [];
-        });
+        setState(() => _flashcards = data["data"] ?? []);
       }
-    } catch (e) {
-      print("Lỗi tải Flashcard: $e");
-    }
+    } catch (e) { print("Lỗi tải Flashcard: $e"); }
     setState(() => _isLoading = false);
   }
 
   void _nextCard(bool isLearned) {
     setState(() {
-      if (!isLearned) {
-        // Nếu chưa thuộc, tống thẻ này xuống cuối danh sách để tí học lại
-        _flashcards.add(_flashcards[_currentIndex]);
-      }
-      
+      if (!isLearned) _flashcards.add(_flashcards[_currentIndex]);
       _currentIndex++;
-      _isFlipped = false; // Trả thẻ về mặt trước cho câu tiếp theo
+      _isFlipped = false;
     });
   }
 
@@ -96,7 +86,7 @@ class _FlashcardScreenState extends State<FlashcardScreen> {
             style: ElevatedButton.styleFrom(backgroundColor: Colors.purpleAccent, padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15)),
             onPressed: _fetchFlashcards,
             icon: const Icon(Icons.refresh, color: Colors.white),
-            label: const Text("Tạo bộ thẻ mới từ PDF", style: TextStyle(color: Colors.white, fontSize: 16)),
+            label: const Text("Tạo bộ thẻ NGẪU NHIÊN mới", style: TextStyle(color: Colors.white, fontSize: 16)),
           )
         ],
       ),
@@ -105,25 +95,20 @@ class _FlashcardScreenState extends State<FlashcardScreen> {
 
   Widget _buildCardContent() {
     final currentCard = _flashcards[_currentIndex];
-    // Tính phần trăm tiến độ
     double progress = (_currentIndex) / _flashcards.length;
 
     return Padding(
       padding: const EdgeInsets.all(20.0),
       child: Column(
         children: [
-          // Thanh tiến trình
           LinearProgressIndicator(value: progress, backgroundColor: Colors.grey[300], color: Colors.purpleAccent, minHeight: 8),
           const SizedBox(height: 20),
           Text("Thẻ số ${_currentIndex + 1} / ${_flashcards.length}", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black54)),
           const SizedBox(height: 20),
           
-          // Thẻ lật
           Expanded(
             child: GestureDetector(
-              onTap: () {
-                setState(() => _isFlipped = !_isFlipped);
-              },
+              onTap: () => setState(() => _isFlipped = !_isFlipped),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 300),
                 width: double.infinity,
@@ -139,21 +124,10 @@ class _FlashcardScreenState extends State<FlashcardScreen> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Text(
-                          currentCard['term'],
-                          textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: _isFlipped ? Colors.purple : Colors.black87),
-                        ),
+                        Text(currentCard['term'], textAlign: TextAlign.center, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: _isFlipped ? Colors.purple : Colors.black87)),
                         if (_isFlipped) ...[
-                          const Padding(
-                            padding: EdgeInsets.symmetric(vertical: 20),
-                            child: Divider(color: Colors.purpleAccent),
-                          ),
-                          Text(
-                            currentCard['definition'],
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(fontSize: 18, color: Colors.black87, height: 1.5),
-                          ),
+                          const Padding(padding: EdgeInsets.symmetric(vertical: 20), child: Divider(color: Colors.purpleAccent)),
+                          Text(currentCard['definition'], textAlign: TextAlign.center, style: const TextStyle(fontSize: 18, color: Colors.black87, height: 1.5)),
                         ] else ...[
                           const SizedBox(height: 40),
                           const Icon(Icons.touch_app, color: Colors.grey, size: 40),
@@ -167,30 +141,28 @@ class _FlashcardScreenState extends State<FlashcardScreen> {
               ),
             ),
           ),
-          
           const SizedBox(height: 30),
           
-          // 2 Nút bấm (Chỉ hiện khi đã lật thẻ)
           if (_isFlipped)
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15)),
-                  onPressed: () => _nextCard(false), // Chưa thuộc
+                  onPressed: () => _nextCard(false),
                   icon: const Icon(Icons.close, color: Colors.white),
                   label: const Text("Học lại sau", style: TextStyle(color: Colors.white)),
                 ),
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15)),
-                  onPressed: () => _nextCard(true), // Đã thuộc
+                  onPressed: () => _nextCard(true),
                   icon: const Icon(Icons.check, color: Colors.white),
                   label: const Text("Đã thuộc", style: TextStyle(color: Colors.white)),
                 ),
               ],
             )
           else
-            const SizedBox(height: 50), // Chiếm chỗ trống để giao diện không bị giật cục
+            const SizedBox(height: 50),
         ],
       ),
     );

@@ -102,10 +102,42 @@ async def get_recommendation(user_id: str):
 
 @router.post("/api/notes")
 async def add_note(request: NoteRequest):
-    supabase.table("notes").insert({"user_id": request.user_id, "title": request.title, "content": request.content}).execute()
+    # ĐÃ SỬA: Lưu thêm notebook_id vào bảng dữ liệu
+    supabase.table("notes").insert({
+        "user_id": request.user_id, 
+        "notebook_id": int(request.notebook_id),  # 👈 THÊM DÒNG NÀY
+        "title": request.title, 
+        "content": request.content
+    }).execute()
     return {"status": "success"}
 
-@router.get("/api/notes/{user_id}")
-async def get_notes(user_id: str):
-    res = supabase.table("notes").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
-    return res.data 
+@router.get("/api/notes/{user_id}/{notebook_id}")
+async def get_notes(user_id: str, notebook_id: int):
+    # ĐÃ SỬA: Lọc thêm điều kiện eq("notebook_id", notebook_id)
+    res = supabase.table("notes").select("*").eq("user_id", user_id).eq("notebook_id", notebook_id).order("created_at", desc=True).execute()
+    return res.data
+
+
+@router.delete("/api/notes/{note_id}")
+async def delete_note(note_id: int):
+    try:
+        supabase.table("notes").delete().eq("id", note_id).execute()
+        return {"status": "success", "message": "Đã xóa ghi chú"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.put("/api/notes/{note_id}")
+async def update_note(note_id: int, request: Request):
+    try:
+        data = await request.json()
+        title = data.get("title", "Ghi chú")
+        content = data.get("content", "")
+        
+        supabase.table("notes").update({
+            "title": title, 
+            "content": content
+        }).eq("id", note_id).execute()
+        
+        return {"status": "success", "message": "Đã cập nhật ghi chú"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}

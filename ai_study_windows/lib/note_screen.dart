@@ -6,13 +6,9 @@ import 'api_constants.dart';
 
 class NoteScreen extends StatefulWidget {
   final String username;
-  final String notebookId; // 👈 THÊM: Quản lý theo cấu trúc dự án
+  final String notebookId; // Quản lý theo cấu trúc dự án
 
-  const NoteScreen({
-    super.key, 
-    required this.username,
-    required this.notebookId, // 👈 BẮT BUỘC NHẬN VÀO KHỞI TẠO
-  });
+  const NoteScreen({super.key, required this.username, required this.notebookId});
 
   @override
   State<NoteScreen> createState() => _NoteScreenState();
@@ -29,10 +25,11 @@ class _NoteScreenState extends State<NoteScreen> {
     _fetchNotes();
   }
 
+  // LẤY DANH SÁCH GHI CHÚ
   Future<void> _fetchNotes() async {
     setState(() => _isLoading = true);
     try {
-      final response = await http.get(Uri.parse("${ApiConstants.baseUrl}/api/notes/${widget.username}"));
+      final response = await http.get(Uri.parse("${ApiConstants.baseUrl}/api/notes/${widget.username}/${widget.notebookId}"));
       if (response.statusCode == 200) {
         setState(() {
           _notes = jsonDecode(utf8.decode(response.bodyBytes));
@@ -44,6 +41,7 @@ class _NoteScreenState extends State<NoteScreen> {
     setState(() => _isLoading = false);
   }
 
+  // XÓA GHI CHÚ
   Future<void> _deleteNote(int noteId) async {
     try {
       final response = await http.delete(Uri.parse("${ApiConstants.baseUrl}/api/notes/$noteId"));
@@ -59,7 +57,200 @@ class _NoteScreenState extends State<NoteScreen> {
     }
   }
 
-  // ================= HIỂN THỊ LÝ THUYẾT GỐC (ĐÃ SỬA LỖI ĐỒNG BỘ NOTEBOOK ID) =================
+  // TẠO GHI CHÚ MỚI BẰNG TAY BÊN TRONG SỔ TAY
+  Future<void> _addNote(String title, String content) async {
+    // Hiện vòng xoay loading
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(child: CircularProgressIndicator(color: Colors.teal)),
+    );
+
+    try {
+      final response = await http.post(
+        Uri.parse("${ApiConstants.baseUrl}/api/notes"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({
+          "user_id": widget.username,
+          "notebook_id": widget.notebookId, 
+          "title": title.isEmpty ? "Ghi chú mới" : title,
+          "content": content,
+        }),
+      );
+
+      if (!mounted) return;
+      Navigator.pop(context); // Tắt loading
+
+      if (response.statusCode == 200) {
+        _fetchNotes(); // Tải lại danh sách
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Đã thêm ghi chú mới!"), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Lỗi kết nối máy chủ!"), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  Future<void> _editNote(int noteId, String newTitle, String newContent) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(child: CircularProgressIndicator(color: Colors.teal)),
+    );
+
+    try {
+      final response = await http.put(
+        Uri.parse("${ApiConstants.baseUrl}/api/notes/$noteId"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({"title": newTitle, "content": newContent}),
+      );
+
+      if (!mounted) return;
+      Navigator.pop(context); 
+
+      if (response.statusCode == 200) {
+        _fetchNotes(); // Tải lại danh sách
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Đã cập nhật ghi chú!"), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Lỗi kết nối máy chủ!"), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  // --- HÀM HIỂN THỊ POPUP NHẬP LẠI NỘI DUNG ---
+  void _showEditNoteDialog(int noteId, String currentTitle, String currentContent) {
+    TextEditingController titleController = TextEditingController(text: currentTitle);
+    TextEditingController contentController = TextEditingController(text: currentContent);
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text("Chỉnh sửa ghi chú", style: TextStyle(color: Colors.teal, fontWeight: FontWeight.bold)),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: titleController,
+                decoration: const InputDecoration(
+                  hintText: "Tiêu đề",
+                  prefixIcon: Icon(Icons.title, color: Colors.teal),
+                ),
+              ),
+              const SizedBox(height: 15),
+              TextField(
+                controller: contentController,
+                maxLines: 6,
+                decoration: InputDecoration(
+                  hintText: "Nhập nội dung...",
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  focusedBorder: OutlineInputBorder(
+                    borderSide: const BorderSide(color: Colors.teal, width: 2),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Hủy", style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+            onPressed: () {
+              if (contentController.text.trim().isNotEmpty) {
+                Navigator.pop(context); 
+                _editNote(noteId, titleController.text, contentController.text);
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text("Nội dung không được để trống!"), backgroundColor: Colors.orange),
+                );
+              }
+            },
+            child: const Text("Lưu thay đổi", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // GIAO DIỆN HIỂN THỊ POPUP VIẾT GHI CHÚ MỚI
+  void _showAddNoteDialog() {
+    TextEditingController titleController = TextEditingController();
+    TextEditingController contentController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text("Tạo ghi chú mới", style: TextStyle(color: Colors.teal, fontWeight: FontWeight.bold)),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: titleController,
+                decoration: const InputDecoration(
+                  hintText: "Tiêu đề (Tùy chọn)",
+                  prefixIcon: Icon(Icons.title, color: Colors.teal),
+                ),
+              ),
+              const SizedBox(height: 15),
+              TextField(
+                controller: contentController,
+                maxLines: 6,
+                decoration: InputDecoration(
+                  hintText: "Nhập nội dung ghi chú của bạn vào đây...",
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  focusedBorder: OutlineInputBorder(
+                    borderSide: const BorderSide(color: Colors.teal, width: 2),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Hủy", style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+            onPressed: () {
+              if (contentController.text.trim().isNotEmpty) {
+                Navigator.pop(context); // Đóng popup
+                _addNote(titleController.text, contentController.text);
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text("Nội dung không được để trống!"), backgroundColor: Colors.orange),
+                );
+              }
+            },
+            child: const Text("Lưu ghi chú", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ================= HIỂN THỊ LÝ THUYẾT GỐC =================
   Future<void> _showReferenceTheory(String filename, int page) async {
     showDialog(
       context: context,
@@ -69,7 +260,6 @@ class _NoteScreenState extends State<NoteScreen> {
     );
 
     try {
-      // 👇 NÂNG CẤP: ĐÍNH KÈM THÊM NOTEBOOK ID VÀO ĐUÔI LINK GET REQUEST
       final response = await http.get(
         Uri.parse("${ApiConstants.baseUrl}/api/reference?user_id=${widget.username}&filename=$filename&page=$page&notebook_id=${widget.notebookId}"),
       );
@@ -113,12 +303,10 @@ class _NoteScreenState extends State<NoteScreen> {
                 boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 5)]
               ),
               child: SingleChildScrollView(
-                // 👇 THAY THẺ TEXT THÀNH MARKDOWN BODY ĐỂ HIỂN THỊ BẢNG VÀ CHỮ IN ĐẬM
                 child: MarkdownBody(
                   data: theoryContent,
                   styleSheet: MarkdownStyleSheet(
                     p: const TextStyle(fontSize: 15, height: 1.6, color: Colors.black87),
-                    // Có thể thêm style cho bảng nếu muốn
                     tableBorder: TableBorder.all(color: Colors.grey.shade300, width: 1),
                     tableCellsPadding: const EdgeInsets.all(8),
                   ),
@@ -156,6 +344,13 @@ class _NoteScreenState extends State<NoteScreen> {
           : _notes.isEmpty
               ? _buildEmptyState()
               : _buildNotesList(),
+      // 👇 NÚT THÊM GHI CHÚ NẰM Ở GÓC DƯỚI BÊN PHẢI MÀN HÌNH
+      floatingActionButton: FloatingActionButton(
+        onPressed: _showAddNoteDialog,
+        backgroundColor: Colors.teal,
+        tooltip: "Tạo ghi chú mới",
+        child: const Icon(Icons.add, color: Colors.white),
+      ),
     );
   }
 
@@ -168,7 +363,7 @@ class _NoteScreenState extends State<NoteScreen> {
           const SizedBox(height: 20),
           const Text("Sổ tay của bạn đang trống!", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 10),
-          const Text("Hãy chat với AI và nhấn nút Lưu để ghi nhớ kiến thức nhé.", style: TextStyle(color: Colors.grey)),
+          const Text("Hãy bấm nút + để tự viết ghi chú hoặc lưu từ AI nhé.", style: TextStyle(color: Colors.grey)),
         ],
       ),
     );
@@ -205,20 +400,37 @@ class _NoteScreenState extends State<NoteScreen> {
                   children: [
                     Row(
                       children: [
-                        const Icon(Icons.calendar_month, size: 16, color: Colors.teal),
-                        const SizedBox(width: 8),
-                        Text(displayDate, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.teal)),
+                        // Nút chỉnh sửa
+                        IconButton(
+                          icon: const Icon(Icons.edit_outlined, color: Colors.blue),
+                          onPressed: () => _showEditNoteDialog(
+                            note['id'], 
+                            note['title'] ?? "Ghi chú", 
+                            note['content'] ?? ""
+                          ),
+                          tooltip: "Sửa ghi chú",
+                        ),
+                        // Nút xóa cũ
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                          onPressed: () => _deleteNote(note['id']),
+                          tooltip: "Xóa ghi chú",
+                        )
                       ],
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                      onPressed: () => _deleteNote(note['id']),
-                      tooltip: "Xóa ghi chú",
                     )
                   ],
                 ),
               ),
               
+              if (note['title'] != null && note['title'].toString().isNotEmpty && note['title'] != 'Ghi chú mới')
+                Padding(
+                  padding: const EdgeInsets.only(left: 20, right: 20, top: 15),
+                  child: Text(
+                    note['title'],
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.teal),
+                  ),
+                ),
+
               Padding(
                 padding: const EdgeInsets.all(20),
                 child: MarkdownBody(
@@ -227,7 +439,6 @@ class _NoteScreenState extends State<NoteScreen> {
                     p: const TextStyle(fontSize: 15, height: 1.6, color: Colors.black87),
                     a: const TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold, decoration: TextDecoration.underline),
                   ),
-                  // BẮT CÚ CLICK CHUỘT VỚI LINK MÃ HÓA GIẢ HTTP://REF/
                   onTapLink: (text, href, title) {
                     if (href != null && href.startsWith('http://ref/')) {
                       String cleanHref = Uri.decodeComponent(href.replaceAll('http://ref/', '').trim());
