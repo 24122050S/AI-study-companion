@@ -61,6 +61,7 @@ class _FlashcardHistoryScreenState extends State<FlashcardHistoryScreen> {
           username: widget.username,
           notebookId: widget.notebookId,
           preloadedCards: cards, 
+          deckId: deckId,
         )));
       }
     } catch (e) {

@@ -75,7 +75,10 @@ class _StudyHistoryScreenState extends State<StudyHistoryScreen> {
   Future<void> _retakeQuiz(int deckId, String title) async {
     _showLoading();
     try {
-      final response = await http.get(Uri.parse("${ApiConstants.baseUrl}/api/quiz/deck/$deckId"));
+      // Thay dòng API cũ bằng dòng này (Thêm đuôi ?user_id=${widget.username}):
+  final response = await http.get(
+    Uri.parse("${ApiConstants.baseUrl}/api/quiz/deck/$deckId?user_id=${widget.username}")
+  );
       if (!mounted) return;
       Navigator.pop(context); // Tắt loading
 
@@ -97,7 +100,9 @@ class _StudyHistoryScreenState extends State<StudyHistoryScreen> {
   Future<void> _reviewFlashcard(int deckId) async {
     _showLoading();
     try {
-      final response = await http.get(Uri.parse("${ApiConstants.baseUrl}/api/flashcards/deck/$deckId"));
+      final response = await http.get(
+    Uri.parse("${ApiConstants.baseUrl}/api/flashcards/deck/$deckId?user_id=${widget.username}")
+  );
       if (!mounted) return;
       Navigator.pop(context); // Tắt loading
 

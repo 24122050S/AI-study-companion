@@ -6,33 +6,49 @@ import 'api_constants.dart';
 class FlashcardScreen extends StatefulWidget {
   final String username;
   final String notebookId;
-  final List<dynamic>? preloadedCards; // 👈 THÊM DÒNG NÀY ĐỂ NHẬN BỘ THẺ CŨ
+  final List<dynamic>? preloadedCards; 
+  final int? deckId; // Nhận thêm Deck ID để biết đang học bộ nào mà lưu
 
-  const FlashcardScreen({super.key, required this.username, required this.notebookId, this.preloadedCards});
+  const FlashcardScreen({super.key, required this.username, required this.notebookId, this.preloadedCards, this.deckId});
 
   @override
   State<FlashcardScreen> createState() => _FlashcardScreenState();
 }
 
 class _FlashcardScreenState extends State<FlashcardScreen> {
-  List<dynamic> _flashcards = [];
+  List<dynamic> _allCards = [];  // Toàn bộ thẻ trong Deck
+  List<dynamic> _dueCards = [];  // Chỉ những thẻ cần học hôm nay
+  
   bool _isLoading = false;
   int _currentIndex = 0;
   bool _isFlipped = false; 
+  int? _currentDeckId;
 
   @override
   void initState() {
     super.initState();
-    // KIỂM TRA: Nếu có bộ thẻ cũ truyền vào thì dùng luôn, không thì gọi AI tạo mới
+    _currentDeckId = widget.deckId;
     if (widget.preloadedCards != null && widget.preloadedCards!.isNotEmpty) {
-      _flashcards = List.from(widget.preloadedCards!);
+      _allCards = List.from(widget.preloadedCards!);
+      _filterDueCards();
     } else {
       _fetchFlashcards();
     }
   }
 
+  // 🚀 BƯỚC 1: LỌC THẺ ĐẾN HẠN
+  void _filterDueCards() {
+    DateTime now = DateTime.now();
+    _dueCards = _allCards.where((card) {
+      if (card['due_date'] == null) return true;
+      DateTime dueDate = DateTime.parse(card['due_date']);
+      // Chỉ học thẻ nếu ngày đến hạn nhỏ hơn hoặc bằng hiện tại
+      return dueDate.isBefore(now) || dueDate.isAtSameMomentAs(now);
+    }).toList();
+  }
+
   Future<void> _fetchFlashcards() async {
-    setState(() { _isLoading = true; _flashcards = []; _currentIndex = 0; _isFlipped = false; });
+    setState(() { _isLoading = true; _allCards = []; _dueCards = []; _currentIndex = 0; _isFlipped = false; });
     try {
       final response = await http.post(
         Uri.parse("${ApiConstants.baseUrl}/api/flashcards"),
@@ -41,52 +57,126 @@ class _FlashcardScreenState extends State<FlashcardScreen> {
       );
       if (response.statusCode == 200) {
         final data = jsonDecode(utf8.decode(response.bodyBytes));
-        setState(() => _flashcards = data["data"] ?? []);
+        setState(() {
+          _allCards = data["data"] ?? [];
+          _currentDeckId = data["deck_id"]; // Lưu lại ID bộ thẻ mới tạo
+          _filterDueCards();
+        });
       }
     } catch (e) { print("Lỗi tải Flashcard: $e"); }
     setState(() => _isLoading = false);
   }
 
-  void _nextCard(bool isLearned) {
+  // 🚀 BƯỚC 2: THUẬT TOÁN SUPERMEMO-2 (SM-2)
+  void _processReview(int quality) {
+    // quality: 0 (Quên), 3 (Nhớ), 5 (Dễ)
+    var card = _dueCards[_currentIndex];
+    
+    // Đọc chỉ số hiện tại (hoặc lấy mặc định nếu thẻ mới)
+    double ease = (card['ease'] ?? 2.5).toDouble();
+    int reps = card['reps'] ?? 0;
+    int interval = card['interval'] ?? 0;
+    int lapses = card['lapses'] ?? 0;
+
+    // Tính toán theo công thức cốt lõi SM-2
+    if (quality >= 3) {
+      if (reps == 0) {
+        interval = 1; // Học lại sau 1 ngày
+      } else if (reps == 1) {
+        interval = 6; // Học lại sau 6 ngày
+      } else {
+        interval = (interval * ease).round(); // Cấp số nhân lên
+      }
+      reps++;
+      ease = ease + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02));
+    } else {
+      reps = 0;      // Reset chuỗi nhớ
+      interval = 0;  // Bắt buộc học lại ngay trong hôm nay
+      lapses++;      // Tăng bộ đếm quên
+      ease = ease - 0.2; // Phạt độ dễ
+    }
+
+    // Đảm bảo Ease không bao giờ tụt dưới 1.3 (Mức tối thiểu của SM-2)
+    if (ease < 1.3) ease = 1.3;
+
+    // Cập nhật lại vào Memory
+    card['ease'] = ease;
+    card['reps'] = reps;
+    card['interval'] = interval;
+    card['lapses'] = lapses;
+    card['last_reviewed'] = DateTime.now().toIso8601String();
+    
+    // Cộng ngày để ra lịch hẹn tiếp theo
+    card['due_date'] = DateTime.now().add(Duration(days: interval)).toIso8601String();
+
     setState(() {
-      if (!isLearned) _flashcards.add(_flashcards[_currentIndex]);
+      if (quality < 3) {
+        // NẾU QUÊN: Ném thẳng thẻ này xuống cuối hàng đợi để học lại ngay trong phiên này
+        _dueCards.add(card); 
+      }
       _currentIndex++;
       _isFlipped = false;
+
+      // NẾU ĐÃ HỌC XONG PHIÊN: Đồng bộ lên Server
+      if (_currentIndex >= _dueCards.length) {
+        _syncProgressToBackend();
+      }
     });
+  }
+
+  // 🚀 BƯỚC 3: ĐỒNG BỘ JSON LÊN BACKEND
+  Future<void> _syncProgressToBackend() async {
+    if (_currentDeckId == null) return;
+    try {
+      await http.put(
+        Uri.parse("${ApiConstants.baseUrl}/api/flashcards/deck/$_currentDeckId"),
+        headers: {"Content-Type": "application/json"},
+        // Gửi toàn bộ _allCards (bao gồm thẻ vừa học và thẻ chưa đến hạn) lên Server
+        body: jsonEncode({"user_id": widget.username, "cards": _allCards}),
+      );
+      print("✅ Đã đồng bộ tiến độ SRS thành công!");
+    } catch (e) {
+      print("Lỗi đồng bộ SRS: $e");
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey[200],
+      backgroundColor: const Color(0xFFF4F7FC),
       appBar: AppBar(
-        title: const Text("Ôn tập Flashcard", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.purpleAccent,
+        title: const Text("Spaced Repetition", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        backgroundColor: Colors.indigoAccent,
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: Colors.purpleAccent))
-          : _currentIndex >= _flashcards.length
-              ? _buildFinishedScreen()
-              : _buildCardContent(),
+          ? const Center(child: CircularProgressIndicator(color: Colors.indigoAccent))
+          : _dueCards.isEmpty 
+              ? _buildFinishedScreen(isDoneForToday: true) // Hôm nay không có thẻ đến hạn
+              : _currentIndex >= _dueCards.length
+                  ? _buildFinishedScreen(isDoneForToday: false) // Vừa học xong thẻ của phiên này
+                  : _buildCardContent(),
     );
   }
 
-  Widget _buildFinishedScreen() {
+  Widget _buildFinishedScreen({required bool isDoneForToday}) {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(Icons.emoji_events, size: 100, color: Colors.amber),
+          Icon(isDoneForToday ? Icons.park : Icons.emoji_events, size: 100, color: isDoneForToday ? Colors.green : Colors.amber),
           const SizedBox(height: 20),
-          const Text("Chúc mừng!", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+          Text(isDoneForToday ? "Bạn đã hoàn thành!" : "Quá tuyệt vời!", style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
           const SizedBox(height: 10),
-          const Text("Bạn đã thuộc hết tất cả các thẻ ghi nhớ.", style: TextStyle(fontSize: 16)),
+          Text(
+            isDoneForToday ? "Không còn thẻ nào cần ôn tập hôm nay." : "Bạn đã thuộc hết các thẻ đến hạn trong phiên này.", 
+            style: const TextStyle(fontSize: 16, color: Colors.grey)
+          ),
           const SizedBox(height: 30),
           ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.purpleAccent, padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15)),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.indigoAccent, padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15)),
             onPressed: _fetchFlashcards,
-            icon: const Icon(Icons.refresh, color: Colors.white),
-            label: const Text("Tạo bộ thẻ NGẪU NHIÊN mới", style: TextStyle(color: Colors.white, fontSize: 16)),
+            icon: const Icon(Icons.add_box, color: Colors.white),
+            label: const Text("Học thêm kiến thức mới (Tạo thêm thẻ)", style: TextStyle(color: Colors.white, fontSize: 15)),
           )
         ],
       ),
@@ -94,16 +184,25 @@ class _FlashcardScreenState extends State<FlashcardScreen> {
   }
 
   Widget _buildCardContent() {
-    final currentCard = _flashcards[_currentIndex];
-    double progress = (_currentIndex) / _flashcards.length;
+    final currentCard = _dueCards[_currentIndex];
+    double progress = (_currentIndex) / _dueCards.length;
+
+    // Định dạng ngày review tiếp theo nếu có (Chỉ để hiển thị nhỏ ở góc)
+    String stats = "Lần lặp: ${currentCard['reps'] ?? 0} | Quên: ${currentCard['lapses'] ?? 0}";
 
     return Padding(
       padding: const EdgeInsets.all(20.0),
       child: Column(
         children: [
-          LinearProgressIndicator(value: progress, backgroundColor: Colors.grey[300], color: Colors.purpleAccent, minHeight: 8),
-          const SizedBox(height: 20),
-          Text("Thẻ số ${_currentIndex + 1} / ${_flashcards.length}", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black54)),
+          LinearProgressIndicator(value: progress, backgroundColor: Colors.grey[300], color: Colors.indigoAccent, minHeight: 8),
+          const SizedBox(height: 15),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text("Đến hạn: ${_currentIndex + 1} / ${_dueCards.length}", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.indigo)),
+              Text(stats, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            ],
+          ),
           const SizedBox(height: 20),
           
           Expanded(
@@ -113,23 +212,23 @@ class _FlashcardScreenState extends State<FlashcardScreen> {
                 duration: const Duration(milliseconds: 300),
                 width: double.infinity,
                 decoration: BoxDecoration(
-                  color: _isFlipped ? Colors.purple[50] : Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10, spreadRadius: 2)],
-                  border: Border.all(color: _isFlipped ? Colors.purpleAccent : Colors.transparent, width: 2)
+                  color: _isFlipped ? Colors.indigo.shade50 : Colors.white,
+                  borderRadius: BorderRadius.circular(24),
+                  boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 15, spreadRadius: 1)],
+                  border: Border.all(color: _isFlipped ? Colors.indigoAccent : Colors.transparent, width: 2)
                 ),
                 child: Center(
                   child: Padding(
-                    padding: const EdgeInsets.all(20.0),
+                    padding: const EdgeInsets.all(24.0),
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Text(currentCard['term'], textAlign: TextAlign.center, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: _isFlipped ? Colors.purple : Colors.black87)),
+                        Text(currentCard['term'], textAlign: TextAlign.center, style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: _isFlipped ? Colors.indigo : Colors.black87)),
                         if (_isFlipped) ...[
-                          const Padding(padding: EdgeInsets.symmetric(vertical: 20), child: Divider(color: Colors.purpleAccent)),
-                          Text(currentCard['definition'], textAlign: TextAlign.center, style: const TextStyle(fontSize: 18, color: Colors.black87, height: 1.5)),
+                          const Padding(padding: EdgeInsets.symmetric(vertical: 20), child: Divider(color: Colors.indigoAccent)),
+                          Text(currentCard['definition'], textAlign: TextAlign.center, style: const TextStyle(fontSize: 18, color: Colors.black87, height: 1.6)),
                         ] else ...[
-                          const SizedBox(height: 40),
+                          const SizedBox(height: 50),
                           const Icon(Icons.touch_app, color: Colors.grey, size: 40),
                           const SizedBox(height: 10),
                           const Text("Chạm để lật thẻ", style: TextStyle(color: Colors.grey)),
@@ -147,24 +246,36 @@ class _FlashcardScreenState extends State<FlashcardScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15)),
-                  onPressed: () => _nextCard(false),
-                  icon: const Icon(Icons.close, color: Colors.white),
-                  label: const Text("Học lại sau", style: TextStyle(color: Colors.white)),
-                ),
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15)),
-                  onPressed: () => _nextCard(true),
-                  icon: const Icon(Icons.check, color: Colors.white),
-                  label: const Text("Đã thuộc", style: TextStyle(color: Colors.white)),
-                ),
+                // 🔴 Nút Quên (Quality = 0)
+                _buildReviewButton(Icons.close, "Quên", Colors.redAccent, () => _processReview(0)),
+                // 🟢 Nút Nhớ (Quality = 3)
+                _buildReviewButton(Icons.thumb_up, "Nhớ", Colors.green, () => _processReview(3)),
+                // 🔵 Nút Dễ (Quality = 5)
+                _buildReviewButton(Icons.flash_on, "Dễ", Colors.blueAccent, () => _processReview(5)),
               ],
             )
           else
-            const SizedBox(height: 50),
+            const SizedBox(height: 60), 
         ],
       ),
+    );
+  }
+
+  Widget _buildReviewButton(IconData icon, String label, Color color, VoidCallback onPressed) {
+    return Column(
+      children: [
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: color, 
+            shape: const CircleBorder(),
+            padding: const EdgeInsets.all(18)
+          ),
+          onPressed: onPressed,
+          child: Icon(icon, color: Colors.white, size: 28),
+        ),
+        const SizedBox(height: 8),
+        Text(label, style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+      ],
     );
   }
 }

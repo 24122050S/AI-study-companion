@@ -38,7 +38,7 @@ def call_groq(prompt: str, is_chat_mode: bool = False, temp: float = 0.2):
             messages=[{"role": "system", "content": sys_msg}, {"role": "user", "content": prompt}],
             model=GROQ_MODEL,
             temperature=temp, 
-            max_tokens=2048,
+            max_tokens=6000, # Nâng giới hạn token để chống lỗi đứt đoạn khi sinh JSON
         )
         return chat_completion.choices[0].message.content
     except Exception as e:
@@ -61,17 +61,18 @@ def extract_json_array(parsed_json, required_keys):
     if not valid_items: raise ValueError("Dữ liệu rỗng hoặc sai cấu trúc")
     return valid_items
 
-# Đã thêm tham số return_refs=False để không làm hỏng các API Quiz/Flashcard cũ
+# ================= HÀM LẤY NGỮ CẢNH RAG =================
 def get_active_context(query: str, user_id: str, notebook_id: str, k_needed: int = 15, return_refs: bool = False):
-    user_vector_path = os.path.join(VECTOR_DB_ROOT, user_id, notebook_id)
-    if not os.path.exists(user_vector_path): 
+    user_vector_path = os.path.join(VECTOR_DB_ROOT, str(user_id), str(notebook_id))
+    
+    if not os.path.exists(os.path.join(user_vector_path, "index.faiss")): 
         return ("", []) if return_refs else ""
         
     vector_db = FAISS.load_local(user_vector_path, embeddings, allow_dangerous_deserialization=True)
-    docs = vector_db.similarity_search(query, k=50) 
+    docs_and_scores = vector_db.similarity_search_with_score(query, k=50) 
     
     try:
-        res = supabase.table("uploaded_files").select("filename").eq("user_id", user_id).eq("notebook_id", int(notebook_id)).execute()
+        res = supabase.table("uploaded_files").select("filename").eq("user_id", str(user_id)).eq("notebook_id", int(notebook_id)).execute()
         active_files = [r['filename'] for r in res.data]
     except: 
         active_files = []
@@ -79,24 +80,46 @@ def get_active_context(query: str, user_id: str, notebook_id: str, k_needed: int
     if not active_files: 
         return ("", []) if return_refs else ""
         
-    valid_docs = [d for d in docs if d.metadata.get("filename") in active_files]
+    valid_docs = []
+    L2_THRESHOLD = 1.6 
+    
+    # 🚀 LÀN ƯU TIÊN (VIP LANE): Nhận diện các câu hỏi tổng quát
+    query_lower = query.lower()
+    is_meta_query = any(kw in query_lower for kw in ["tóm tắt", "tổng quan", "nội dung", "ý chính", "file này", "tài liệu", "là gì"])
+    
+    for doc, score in docs_and_scores:
+        if doc.metadata.get("filename") in active_files:
+            if return_refs:
+                # Nếu là câu hỏi tóm tắt, cho phép đi qua rào chắn luôn
+                if is_meta_query or score <= L2_THRESHOLD:
+                    valid_docs.append(doc)
+            else:
+                valid_docs.append(doc)
+            
+    if not valid_docs:
+        return ("", []) if return_refs else ""
     
     formatted_contexts = []
-    references = [] # 👈 MẢNG LƯU TRỮ LINK CHUẨN DO BACKEND TẠO
+    source_map = []
     
     for i, doc in enumerate(valid_docs[:k_needed]):
         fname = doc.metadata.get("filename", "Không rõ tài liệu")
         page = doc.metadata.get("page", "?")
-        source_id = i + 1 # Đánh số [1], [2], [3]...
+        source_id = i + 1 
         
-        # Nhồi số ID vào cho AI dễ đọc
+        chunk_id = doc.metadata.get("chunk_id", f"chk_{notebook_id}_{source_id}_{i}")
+        
         formatted_contexts.append(f"--- NGUỒN [{source_id}] ---\nTài liệu: {fname} (Trang {page})\nNội dung: {doc.page_content}")
         
-        # Backend tự format link tĩnh, chuẩn xác 100%
-        references.append(f"[{source_id}] [📚 {fname} - Trang {page}](http://ref/{fname}|{page})")
+        source_map.append({
+            "id": source_id,
+            "file": fname,
+            "page": page,
+            "chunk_id": chunk_id
+        })
         
     context_str = "\n\n".join(formatted_contexts)
     
     if return_refs:
-        return context_str, references
+        return context_str, source_map 
     return context_str

@@ -41,29 +41,39 @@ async def delete_notebook(notebook_id: int):
         if res.data:
             user_id = res.data[0]['user_id']
             path = os.path.join(VECTOR_DB_ROOT, user_id, str(notebook_id))
-            # 2. Xóa sạch folder vector lưu cục bộ trên máy tính
+            # Xóa sạch folder vector lưu cục bộ trên máy tính
             if os.path.exists(path): 
                 shutil.rmtree(path)
                 
+        # 2. 🛡️ FAIL-SAFE: TỰ ĐỘNG DỌN SẠCH DỮ LIỆU MỒ CÔI (ORPHANED DATA)
+        # Quét sạch các bảng phụ thuộc trước khi xóa bảng chính để chống rác dữ liệu
+        supabase.table("chat_history").delete().eq("notebook_id", notebook_id).execute()
+        supabase.table("uploaded_files").delete().eq("notebook_id", notebook_id).execute()
+        supabase.table("notes").delete().eq("notebook_id", notebook_id).execute()
+        supabase.table("quiz_decks").delete().eq("notebook_id", notebook_id).execute()
+        supabase.table("flashcard_decks").delete().eq("notebook_id", notebook_id).execute()
+                
         # 3. Tiến hành xóa notebook trong database Supabase
-        # (Lưu ý: Đảm bảo các bảng liên quan như quiz_decks, flashcard_decks đã được set "ON DELETE CASCADE" trong SQL)
         supabase.table("notebooks").delete().eq("id", notebook_id).execute()
         
-        return {"status": "success", "message": "Đã xóa dự án thành công!"}
+        return {"status": "success", "message": "Đã dọn sạch và xóa dự án thành công!"}
     except Exception as e:
         return {"status": "error", "message": f"Không thể xóa dự án: {str(e)}"}
 
 @router.post("/api/score")
 async def save_score(request: ScoreRequest):
-    # Giữ nguyên logic lưu điểm của bạn
-    supabase.table("history").insert({
-        "user_id": request.user_id,
-        "topic": request.topic,
-        "score": request.score,
-        "total": request.total,
-        "percentage": int((request.score / request.total) * 100)
-    }).execute()
-    return {"status": "success"}
+    try:
+        supabase.table("history").insert({
+            "user_id": request.user_id,
+            "topic": request.topic,
+            "score": request.score,
+            "total": request.total,
+            "percentage": int((request.score / request.total) * 100)
+        }).execute()
+        return {"status": "success"}
+    except Exception as e:
+        print(f"🔥 LỖI LƯU ĐIỂM: {str(e)}") # In thẳng ra Terminal Python để bắt mạch
+        return {"status": "error", "message": str(e)}
 
 @router.get("/api/dashboard/{user_id}")
 async def get_dashboard(user_id: str):

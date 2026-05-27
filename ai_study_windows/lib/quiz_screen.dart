@@ -12,7 +12,7 @@ class QuizScreen extends StatefulWidget {
   final int timeLimit; 
   final String username; 
   final String difficulty;
-  final String notebookId; // 👈 THÊM: Quản lý theo dự án
+  final String notebookId; 
   final List<dynamic>? preloadedQuestions; 
 
   const QuizScreen({
@@ -21,7 +21,7 @@ class QuizScreen extends StatefulWidget {
     required this.numQuestions, 
     required this.timeLimit,
     required this.username,
-    required this.notebookId, // 👈 BẮT BUỘC TRUYỀN VÀO
+    required this.notebookId, 
     this.difficulty = "Trung bình",
     this.preloadedQuestions, 
   });
@@ -44,6 +44,7 @@ class _QuizScreenState extends State<QuizScreen> {
   void initState() {
     super.initState();
     _secondsRemaining = widget.timeLimit;
+    _fetchQuiz(); // Tự động gọi hàm tải đề khi mở màn hình
   }
 
   void _startTimer() {
@@ -91,7 +92,7 @@ class _QuizScreenState extends State<QuizScreen> {
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
           "user_id": widget.username, 
-          "notebook_id": widget.notebookId, // 👈 GỬI THÊM NOTEBOOK ID LÊN BACKEND
+          "notebook_id": widget.notebookId, 
           "num_questions": widget.numQuestions, 
           "difficulty": widget.difficulty
         }),
@@ -119,7 +120,10 @@ class _QuizScreenState extends State<QuizScreen> {
     List<String> wrongQuestions = [];
     for (int i = 0; i < _questions.length; i++) {
       if (_selectedAnswers[i] != _questions[i]['answer']) {
-        wrongQuestions.add(_questions[i]['question']);
+        // 🚀 NÂNG CẤP: Gửi kèm tên Khái Niệm lên cho AI phân tích sâu hơn
+        String concept = _questions[i]['concept'] ?? "Kiến thức chung";
+        String question = _questions[i]['question'];
+        wrongQuestions.add("[$concept] - $question");
       }
     }
 
@@ -137,7 +141,7 @@ class _QuizScreenState extends State<QuizScreen> {
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
           "user_id": widget.username,
-          "notebook_id": widget.notebookId, // 👈 GỬI THÊM NOTEBOOK ID ĐỂ AI ĐỌC ĐÚNG FILE
+          "notebook_id": widget.notebookId, 
           "wrong_questions": wrongQuestions,
         }),
       );
@@ -200,7 +204,6 @@ class _QuizScreenState extends State<QuizScreen> {
               style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
               onPressed: () {
                 Navigator.pop(context); 
-                
                 Navigator.pushReplacement(
                   context,
                   MaterialPageRoute(
@@ -209,7 +212,7 @@ class _QuizScreenState extends State<QuizScreen> {
                       numQuestions: remedialQuiz.length,
                       timeLimit: 0, 
                       username: widget.username,
-                      notebookId: widget.notebookId, // 👈 TIẾP TỤC TRUYỀN ĐI KHI LÀM ĐỀ KHẮC PHỤC
+                      notebookId: widget.notebookId, 
                       preloadedQuestions: remedialQuiz, 
                     ),
                   ),
@@ -287,17 +290,9 @@ class _QuizScreenState extends State<QuizScreen> {
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
                 onPressed: () {
                   Navigator.pop(context); 
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => QuizReviewScreen(
-                        questions: _questions, 
-                        userAnswers: _selectedAnswers, 
-                      ),
-                    ),
-                  );
+                  // Khi tắt popup, mảng _isFinished đã là true, giao diện sẽ tự xổ Giải thích ra
                 },
-                child: const Text("Xem đáp án", style: TextStyle(color: Colors.white)),
+                child: const Text("Xem đáp án & Giải thích", style: TextStyle(color: Colors.white)),
               ),
 
               ElevatedButton(
@@ -361,7 +356,7 @@ class _QuizScreenState extends State<QuizScreen> {
       body: _isLoading
           ? Center(child: CircularProgressIndicator(color: themeColor))
           : _questions.isEmpty
-              ? _buildStartScreen(themeColor)
+              ? const Center(child: Text("Đang tải dữ liệu...")) // Đã bỏ nút Bắt Đầu thừa thãi
               : _buildQuizContent(themeColor),
       floatingActionButton: (_questions.isNotEmpty && !_isFinished)
           ? FloatingActionButton.extended(
@@ -371,30 +366,6 @@ class _QuizScreenState extends State<QuizScreen> {
               backgroundColor: themeColor,
             )
           : null,
-    );
-  }
-
-  Widget _buildStartScreen(Color color) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(widget.timeLimit > 0 ? Icons.timer_outlined : Icons.menu_book, size: 80, color: color),
-          const SizedBox(height: 20),
-          Text(
-            widget.timeLimit > 0 
-              ? "Thời gian: ${_formatTime(widget.timeLimit)} / ${widget.numQuestions} câu"
-              : "Luyện tập thoải mái ${widget.numQuestions} câu", 
-            style: const TextStyle(fontSize: 18)
-          ),
-          const SizedBox(height: 30),
-          ElevatedButton(
-            onPressed: _fetchQuiz,
-            style: ElevatedButton.styleFrom(backgroundColor: color, padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15)),
-            child: const Text("BẮT ĐẦU", style: TextStyle(color: Colors.white, fontSize: 18)),
-          ),
-        ],
-      ),
     );
   }
 
@@ -413,6 +384,30 @@ class _QuizScreenState extends State<QuizScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // 🚀 NÂNG CẤP: HIỂN THỊ TAG KHÁI NIỆM VÀ NGUỒN (Nếu AI có gửi về)
+                if (q['concept'] != null || q['source_page'] != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12.0),
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        if (q['concept'] != null && q['concept'].toString().isNotEmpty)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.blue.shade100)),
+                            child: Text("💡 ${q['concept']}", style: TextStyle(fontSize: 12, color: Colors.blue.shade800, fontWeight: FontWeight.bold)),
+                          ),
+                        if (q['source_page'] != null && q['source_page'].toString().isNotEmpty)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.grey.shade300)),
+                            child: Text("📄 Trang ${q['source_page']}", style: TextStyle(fontSize: 12, color: Colors.grey.shade800)),
+                          ),
+                      ],
+                    ),
+                  ),
+
                 Text("Câu ${index + 1}: ${q['question']}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                 const Divider(),
                 ...List<Widget>.from(q['options'].map((opt) {
@@ -428,7 +423,9 @@ class _QuizScreenState extends State<QuizScreen> {
                     },
                   );
                 })),
-                if (_isFinished)
+                
+                // 🚀 NÂNG CẤP: KHU VỰC HIỂN THỊ ĐÁP ÁN VÀ GIẢI THÍCH CHI TIẾT
+                if (_isFinished) ...[
                   Padding(
                     padding: const EdgeInsets.only(top: 8.0),
                     child: Text(
@@ -440,7 +437,33 @@ class _QuizScreenState extends State<QuizScreen> {
                         fontWeight: FontWeight.bold
                       ),
                     ),
-                  )
+                  ),
+                  
+                  // Khung Giải thích màu vàng hiển thị lộng lẫy
+                  if (q['explanation'] != null && q['explanation'].toString().isNotEmpty)
+                    Container(
+                      margin: const EdgeInsets.only(top: 15),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.amber.shade200)
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.menu_book, color: Colors.orange, size: 20),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              "Giải thích: ${q['explanation']}",
+                              style: TextStyle(color: Colors.orange.shade900, fontSize: 14, height: 1.4),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ]
               ],
             ),
           ),

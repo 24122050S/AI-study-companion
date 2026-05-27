@@ -262,10 +262,22 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       
       final response = await request.send();
+      final respStr = await response.stream.bytesToString(); // Đọc nội dung lỗi từ Python
+
       if (response.statusCode == 200) {
         _fetchFiles(); 
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✅ AI đã học xong tài liệu!'), backgroundColor: Colors.green));
+      } else {
+        // 🛡️ ĐÃ SỬA: Nếu máy chủ báo lỗi (Ví dụ 500), hiện bảng màu đỏ báo cáo ngay
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Lỗi máy chủ: $respStr'), 
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5), // Hiện 5 giây để bạn kịp đọc
+          )
+        );
       }
     } catch (e) { print(e); }
   }
@@ -635,61 +647,94 @@ class _HomeScreenState extends State<HomeScreen> {
                       
                       // ================== CẬP NHẬT Ở ĐÂY ==================
                       child: isAi 
-                        ? Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              MarkdownBody(
-                                data: _formatMarkdownLink(m['text'] ?? ''), // 👈 ĐÃ SỬA
-                                styleSheet: MarkdownStyleSheet(
-                                  p: const TextStyle(fontSize: 15, color: Colors.black87),
-                                  a: const TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold, decoration: TextDecoration.underline),
-                                ),
-                                onTapLink: (text, href, title) {
-                                  if (href != null && href.startsWith('http://ref/')) {
-                                    String cleanHref = Uri.decodeComponent(href.replaceAll('http://ref/', '').trim());
-                                    final parts = cleanHref.split('|');
-                                    if (parts.length >= 2) {
-                                      String filename = parts[0].trim();
-                                      int page = int.tryParse(parts[1].trim()) ?? 1;
-                                      _showReferenceTheory(filename, page);
-                                    }
-                                  }
-                                },
-                              ),
-                              if (m['text'] != "Đang suy nghĩ...") ...[
-                                const SizedBox(height: 10),
-                                const Divider(color: Colors.black12, height: 1),
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.end,
-                                  children: [
-                                    // 👇 ĐÃ SỬA: Đổi Icon và Màu sắc tùy theo trạng thái
-                                    Builder(
-                                      builder: (context) {
-                                        bool isPlayingThis = _currentlyPlayingText == m['text'];
-                                        return IconButton(
-                                          icon: Icon(
-                                            isPlayingThis ? Icons.stop_circle : Icons.volume_up, 
-                                            size: 20, 
-                                            color: isPlayingThis ? Colors.redAccent : Colors.orange
-                                          ),
-                                          tooltip: isPlayingThis ? 'Dừng đọc' : 'Đọc câu trả lời',
-                                          onPressed: () => _toggleAudio(m['text']!), // Gọi hàm mới
-                                        );
-                                      }
+                        ? Builder(
+                            builder: (context) {
+                              String rawText = m['text']!;
+                              String displayText = rawText;
+                              List<dynamic> sourceMap = [];
+
+                              if (rawText.contains("|||METADATA|||")) {
+                                var parts = rawText.split("|||METADATA|||");
+                                displayText = parts[0]; 
+                                try {
+                                  sourceMap = jsonDecode(parts[1]); 
+                                } catch (e) { print("Lỗi parse source map: $e"); }
+                              }
+
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  // 👇 ĐÃ SỬA LỖI 1: Thêm lại hàm onTapLink để bắt sự kiện bấm vào marker [1]
+                                  MarkdownBody(
+                                    data: _formatMarkdownLink(displayText),
+                                    styleSheet: MarkdownStyleSheet(
+                                      p: const TextStyle(fontSize: 15, color: Colors.black87),
+                                      a: const TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold, decoration: TextDecoration.underline),
                                     ),
-                                    IconButton(
-                                      icon: const Icon(Icons.bookmark_add_outlined, size: 20, color: Colors.teal),
-                                      tooltip: 'Lưu vào sổ tay',
-                                      onPressed: () => _quickSaveNote(m['text']!),
+                                    onTapLink: (text, href, title) {
+                                      if (href != null && href.startsWith('http://ref/')) {
+                                        String cleanHref = Uri.decodeComponent(href.replaceAll('http://ref/', '').trim());
+                                        final parts = cleanHref.split('|');
+                                        if (parts.length >= 2) {
+                                          String filename = parts[0].trim();
+                                          int page = int.tryParse(parts[1].trim()) ?? 1;
+                                          _showReferenceTheory(filename, page);
+                                        }
+                                      }
+                                    },
+                                  ),
+                                  
+                                  if (sourceMap.isNotEmpty) ...[
+                                    const SizedBox(height: 12),
+                                    const Text("📍 Nguồn tài liệu:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey)),
+                                    const SizedBox(height: 6),
+                                    Wrap(
+                                      spacing: 8,
+                                      runSpacing: 8,
+                                      children: sourceMap.map((src) {
+                                        return ActionChip(
+                                          avatar: CircleAvatar(
+                                            backgroundColor: Colors.indigo.shade100,
+                                            child: Text("${src['id']}", style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.indigo)),
+                                          ),
+                                          label: Text(
+                                            "${src['file']} (Tr. ${src['page']})",
+                                            style: const TextStyle(fontSize: 12, color: Colors.indigo, fontWeight: FontWeight.w500),
+                                          ),
+                                          backgroundColor: Colors.indigo.withOpacity(0.05),
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                          onPressed: () {
+                                            // 👇 ĐÃ SỬA LỖI 2: Dùng tryParse thay vì parse để chống Crash khi page là dấu "?"
+                                            int pageNum = int.tryParse(src['page'].toString()) ?? 1;
+                                            _showReferenceTheory(src['file'], pageNum);
+                                          },
+                                        );
+                                      }).toList(),
                                     ),
                                   ],
-                                )
-                              ]
-                            ],
+
+                                  if (m['text'] != "Đang suy nghĩ...") ...[
+                                    const SizedBox(height: 10),
+                                    const Divider(color: Colors.black12, height: 1),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.end,
+                                      children: [
+                                        IconButton(
+                                          icon: const Icon(Icons.volume_up, size: 20, color: Colors.orange),
+                                          onPressed: () => _toggleAudio(displayText), 
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(Icons.bookmark_add_outlined, size: 20, color: Colors.teal),
+                                          onPressed: () => _quickSaveNote(displayText), 
+                                        ),
+                                      ],
+                                    )
+                                  ]
+                                ],
+                              );
+                            }
                           )
                         : Text(m['text']!, style: const TextStyle(color: Colors.white, fontSize: 15)),
-                      // =======================================================
-
                     ),
                   );
                 },

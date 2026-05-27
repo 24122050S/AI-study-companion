@@ -36,35 +36,14 @@ async def upload_file(file: UploadFile = File(...), user_id: str = Form(...), no
                 page_chunks = text_splitter.split_text(text)
                 chunks.extend(page_chunks)
                 metadatas.extend([{"filename": file.filename, "page": 1} for _ in page_chunks])
-        elif ext in ['doc', 'docx']:
-            doc = docx.Document(io.BytesIO(content))
-            text = "\n".join([para.text for para in doc.paragraphs if para.text.strip()])
-            if text.strip():
-                page_chunks = text_splitter.split_text(text)
-                chunks.extend(page_chunks)
-                metadatas.extend([{"filename": file.filename, "page": 1} for _ in page_chunks])
-        elif ext in ['ppt', 'pptx']:
-            ppt = Presentation(io.BytesIO(content))
-            for i, slide in enumerate(ppt.slides):
-                slide_text = ""
-                for shape in slide.shapes:
-                    if hasattr(shape, "text") and shape.text: slide_text += shape.text + "\n"
-                if slide_text.strip():
-                    page_chunks = text_splitter.split_text(slide_text)
-                    chunks.extend(page_chunks)
-                    metadatas.extend([{"filename": file.filename, "page": i + 1} for _ in page_chunks])
-        elif ext in ['jpg', 'jpeg', 'png']:
-            img = Image.open(io.BytesIO(content))
-            text = pytesseract.image_to_string(img, lang='vie+eng')
-            if text.strip():
-                page_chunks = text_splitter.split_text(text)
-                chunks.extend(page_chunks)
-                metadatas.extend([{"filename": file.filename, "page": 1} for _ in page_chunks])
-        else: raise HTTPException(status_code=400, detail=f"Định dạng .{ext} chưa được hỗ trợ!")
+        else: 
+            raise HTTPException(status_code=400, detail=f"Định dạng .{ext} chưa được hỗ trợ!")
 
         if not chunks: return {"status": "error", "message": "File rỗng hoặc không có chữ!"}
 
-        user_vector_path = os.path.join(VECTOR_DB_ROOT, user_id, notebook_id)
+        # 🛡️ ĐÃ BỌC THÉP ÉP KIỂU str()
+        user_vector_path = os.path.join(VECTOR_DB_ROOT, str(user_id), str(notebook_id))
+        
         if os.path.exists(user_vector_path):
             vector_db = FAISS.load_local(user_vector_path, embeddings, allow_dangerous_deserialization=True)
             vector_db.add_texts(chunks, metadatas=metadatas) 
@@ -72,14 +51,15 @@ async def upload_file(file: UploadFile = File(...), user_id: str = Form(...), no
             vector_db = FAISS.from_texts(chunks, embeddings, metadatas=metadatas) 
         vector_db.save_local(user_vector_path)
 
+        # 🛡️ Ghi vào Database
         supabase.table("uploaded_files").insert({"user_id": user_id, "filename": file.filename, "notebook_id": int(notebook_id)}).execute()
         return {"status": "success", "message": f"AI đã học xong file {file.filename}!"}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e: 
+        print(f"🔥 [LỖI UPLOAD CRITICAL]: {str(e)}") # Báo lỗi cực mạnh ra Terminal
+        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống: {str(e)}")
 
-# ĐÃ SỬA: Thêm notebook_id vào đường dẫn API và vào điều kiện lọc (eq)
 @router.get("/api/files/{user_id}/{notebook_id}")
 async def get_uploaded_files(user_id: str, notebook_id: int):
-    # Dùng .eq() hai lần để lọc: File đó phải của user này VÀ nằm trong notebook này
     res = supabase.table("uploaded_files").select("*").eq("user_id", user_id).eq("notebook_id", notebook_id).order("upload_date", desc=True).execute()
     return [{"id": r['id'], "filename": r['filename'], "date": r['upload_date']} for r in res.data]
 
@@ -94,15 +74,10 @@ async def delete_file_history(file_id: int):
         filename = res.data[0]['filename']
         notebook_id = res.data[0]['notebook_id'] 
         
-        user_vector_path = os.path.join(VECTOR_DB_ROOT, user_id, str(notebook_id))
+        user_vector_path = os.path.join(VECTOR_DB_ROOT, str(user_id), str(notebook_id))
         if os.path.exists(user_vector_path):
             vector_db = FAISS.load_local(user_vector_path, embeddings, allow_dangerous_deserialization=True)
-            
-            ids_to_delete = [
-                doc_id for doc_id, doc in vector_db.docstore._dict.items()
-                if doc.metadata.get("filename") == filename
-            ]
-            
+            ids_to_delete = [doc_id for doc_id, doc in vector_db.docstore._dict.items() if doc.metadata.get("filename") == filename]
             if ids_to_delete:
                 vector_db.delete(ids_to_delete)
                 if not vector_db.docstore._dict:
@@ -115,23 +90,13 @@ async def delete_file_history(file_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi hệ thống khi xóa file: {str(e)}")
 
-# --- API: TẨY NÃO CÁ NHÂN (XÓA BỘ NHỚ VECTOR RIÊNG BIỆT) ---
-@router.delete("/api/files/reset/{user_id}")
-async def reset_ai_brain(user_id: str):
-    user_vector_path = os.path.join(VECTOR_DB_ROOT, user_id)
-    if os.path.exists(user_vector_path): 
-        shutil.rmtree(user_vector_path)
-    supabase.table("uploaded_files").delete().eq("user_id", user_id).execute()
-    return {"status": "success", "message": "Đã làm sạch không gian bộ nhớ cá nhân của bạn!"}
-
 @router.get("/api/reference")
 async def get_reference_content(user_id: str, filename: str, page: int, notebook_id: str = ""):
     try:
-        user_vector_path = os.path.join(VECTOR_DB_ROOT, user_id, notebook_id) if notebook_id else os.path.join(VECTOR_DB_ROOT, user_id)
+        user_vector_path = os.path.join(VECTOR_DB_ROOT, str(user_id), str(notebook_id)) if notebook_id else os.path.join(VECTOR_DB_ROOT, str(user_id))
         if not os.path.exists(user_vector_path): return {"status": "error", "data": "Không tìm thấy dữ liệu học tập."}
 
         vector_db = FAISS.load_local(user_vector_path, embeddings, allow_dangerous_deserialization=True)
-        
         def normalize_filename(name): return name.replace("_", "").replace(" ", "").replace("%20", "").lower()
         target_filename = normalize_filename(filename)
         

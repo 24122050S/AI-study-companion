@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 import io
 import edge_tts
+import json
 import os
 from models import ChatRequest
 from core import supabase, get_active_context, VECTOR_DB_ROOT, groq_client, GROQ_MODEL
@@ -30,11 +31,13 @@ async def chat_with_ai(request: ChatRequest):
     try:
         supabase.table("chat_history").insert({"user_id": request.user_id, "notebook_id": int(request.notebook_id), "sender": "user", "message": request.message}).execute()
         
-        # 👈 LẤY CẢ BỘ TEXT VÀ BỘ LINK TỪ CORE
         context_text, references_list = get_active_context(request.message, request.user_id, request.notebook_id, k_needed=12, return_refs=True)
         
-        if not context_text and not os.path.exists(os.path.join(VECTOR_DB_ROOT, request.user_id, request.notebook_id)):
-            async def quick_reply(): yield "Vui lòng tải tài liệu PDF lên trước nhé! 📚"
+        # 🛡️ KIỂM TRA MÀNG LỌC: Nếu hàm core.py trả về rỗng do lạc đề, chặn luôn từ cửa
+        if not context_text:
+            async def quick_reply(): yield "Rất tiếc, thông tin này không có trong tài liệu bạn đã tải lên dự án này. Vui lòng hỏi các nội dung xoay quanh tài liệu nhé! 📚"
+            # Lưu câu trả lời từ chối vào database luôn
+            supabase.table("chat_history").insert({"user_id": request.user_id, "notebook_id": int(request.notebook_id), "sender": "ai", "message": "Rất tiếc, thông tin này không có trong tài liệu bạn đã tải lên dự án này. Vui lòng hỏi các nội dung xoay quanh tài liệu nhé! 📚"}).execute()
             return StreamingResponse(quick_reply(), media_type="text/plain")
             
         prompt = f"""
@@ -43,20 +46,21 @@ async def chat_with_ai(request: ChatRequest):
         
         CÂU HỎI CỦA HỌC SINH: {request.message}
         
-        ⛔ LƯU Ý SỐNG CÒN:
-        - Đánh giá xem CÂU HỎI có nằm trong TÀI LIỆU không. Nếu KHÔNG, BẮT BUỘC TỪ CHỐI.
+        ⛔ LƯU Ý SỐNG CÒN VÀ KỶ LUẬT:
+        1. NẾU MỤC TÀI LIỆU KHÔNG CÓ THÔNG TIN LIÊN QUAN, BẠN BẮT BUỘC PHẢI TRẢ LỜI ĐÚNG CÂU NÀY: "Rất tiếc, thông tin này không có trong tài liệu bạn đã tải lên dự án này."
+        2. TUYỆT ĐỐI KHÔNG ĐƯỢC dùng kiến thức bên ngoài (ngoài tài liệu) để trả lời, kể cả khi bạn biết đáp án. Không bịa đặt, không suy diễn vượt quá nội dung tài liệu.
         
-        ✅ YÊU CẦU:
-        1. BẮT BUỘC DỰA 100% VÀO TÀI LIỆU.
+        ✅ YÊU CẦU TRÌNH BÀY:
+        1. Chỉ trả lời dựa 100% vào TÀI LIỆU.
         2. Trích dẫn nguồn bằng cách thêm ngoặc vuông chứa số của nguồn vào cuối câu. Ví dụ: "Theo định nghĩa [1]... và ứng dụng [2]."
-        3. TUYỆT ĐỐI KHÔNG tự tạo link URL hay định dạng Markdown phức tạp. CHỈ DÙNG [1], [2], v.v.
+        3. Tuyệt đối không tự tạo link URL hay định dạng Markdown phức tạp. Chỉ dùng [1], [2], v.v.
         """
         async def generate_chat():
             full_ai_response = ""
             try:
                 chat_completion = groq_client.chat.completions.create(
                     messages=[{"role": "system", "content": "Bạn là Giáo sư AI..."}, {"role": "user", "content": prompt}],
-                    model=GROQ_MODEL, temperature=0.4, max_tokens=3000, stream=True
+                    model=GROQ_MODEL, temperature=0.1, max_tokens=3000, stream=True
                 )
                 for chunk in chat_completion:
                     if chunk.choices[0].delta.content:
@@ -64,19 +68,13 @@ async def chat_with_ai(request: ChatRequest):
                         full_ai_response += text_chunk
                         yield text_chunk
                 
-                # 🔥 BACKEND TỰ ĐỘNG GẮN LINK TRÍCH DẪN CHUẨN XÁC VÀO CUỐI CÙNG
+                # 🚀 ĐÃ NÂNG CẤP: Bắn mảng JSON Source Map xuống dưới đuôi Stream qua ký tự phân tách
                 if full_ai_response and references_list:
-                    footer = "\n\n---\n**🔍 Nguồn tham khảo:**\n"
-                    yield footer
-                    full_ai_response += footer
-                    
-                    # Loại bỏ các nguồn trùng lặp
-                    unique_refs = list(dict.fromkeys(references_list))
-                    for ref in unique_refs:
-                        yield ref + "\n"
-                        full_ai_response += ref + "\n"
+                    # Ký tự phân tách giúp Frontend biết đâu là chữ, đâu là Map dữ liệu
+                    metadata_marker = f"|||METADATA|||{json.dumps(references_list)}"
+                    yield metadata_marker
+                    full_ai_response += metadata_marker
 
-                # Lưu vào DB chuỗi hoàn chỉnh (đã có footer)
                 if full_ai_response:
                     supabase.table("chat_history").insert({"user_id": request.user_id, "notebook_id": int(request.notebook_id), "sender": "ai", "message": full_ai_response}).execute()
                     
