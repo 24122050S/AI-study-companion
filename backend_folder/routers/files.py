@@ -1,16 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-import os
-import shutil
-import fitz
-import docx
-from pptx import Presentation
-import pytesseract
-from PIL import Image
 import io
-from core import supabase, embeddings, text_splitter, VECTOR_DB_ROOT, call_groq
-from langchain_community.vectorstores import FAISS
-
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+from core import supabase, embeddings, text_splitter, call_groq
+from langchain_community.vectorstores import SupabaseVectorStore
 
 router = APIRouter()
 
@@ -22,6 +13,7 @@ async def upload_file(file: UploadFile = File(...), user_id: str = Form(...), no
         chunks, metadatas = [], []
         
         if ext == 'pdf':
+            import fitz
             pdf_document = fitz.open(stream=content, filetype="pdf")
             for page_num in range(len(pdf_document)):
                 page = pdf_document.load_page(page_num)
@@ -30,33 +22,79 @@ async def upload_file(file: UploadFile = File(...), user_id: str = Form(...), no
                     page_chunks = text_splitter.split_text(extracted)
                     chunks.extend(page_chunks)
                     metadatas.extend([{"filename": file.filename, "page": page_num + 1} for _ in page_chunks])
+                    
         elif ext == 'txt':
             text = content.decode('utf-8', errors='ignore')
             if text.strip():
                 page_chunks = text_splitter.split_text(text)
                 chunks.extend(page_chunks)
                 metadatas.extend([{"filename": file.filename, "page": 1} for _ in page_chunks])
+                
+        elif ext in ['doc', 'docx']:
+            try:
+                import docx
+            except ImportError:
+                return {"status": "error", "message": "Thiếu thư viện python-docx"}
+            doc = docx.Document(io.BytesIO(content))
+            text = "\n".join([para.text for para in doc.paragraphs if para.text.strip()])
+            if text.strip():
+                page_chunks = text_splitter.split_text(text)
+                chunks.extend(page_chunks)
+                metadatas.extend([{"filename": file.filename, "page": 1} for _ in page_chunks])
+                
+        elif ext in ['ppt', 'pptx']:
+            try:
+                from pptx import Presentation
+            except ImportError:
+                return {"status": "error", "message": "Thiếu thư viện python-pptx"}
+            ppt = Presentation(io.BytesIO(content))
+            for i, slide in enumerate(ppt.slides):
+                slide_text = ""
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text: slide_text += shape.text + "\n"
+                if slide_text.strip():
+                    page_chunks = text_splitter.split_text(slide_text)
+                    chunks.extend(page_chunks)
+                    metadatas.extend([{"filename": file.filename, "page": i + 1} for _ in page_chunks])
+                    
+        elif ext in ['jpg', 'jpeg', 'png']:
+            try:
+                import pytesseract
+                from PIL import Image
+            except ImportError:
+                return {"status": "error", "message": "Thiếu thư viện pytesseract Pillow"}
+            
+            pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+            img = Image.open(io.BytesIO(content))
+            text = pytesseract.image_to_string(img, lang='vie+eng')
+            if text.strip():
+                page_chunks = text_splitter.split_text(text)
+                chunks.extend(page_chunks)
+                metadatas.extend([{"filename": file.filename, "page": 1} for _ in page_chunks])
+                
         else: 
             raise HTTPException(status_code=400, detail=f"Định dạng .{ext} chưa được hỗ trợ!")
 
-        if not chunks: return {"status": "error", "message": "File rỗng hoặc không có chữ!"}
+        if not chunks: return {"status": "error", "message": "File rỗng hoặc AI không thể đọc được chữ!"}
 
-        # 🛡️ ĐÃ BỌC THÉP ÉP KIỂU str()
-        user_vector_path = os.path.join(VECTOR_DB_ROOT, str(user_id), str(notebook_id))
-        
-        if os.path.exists(user_vector_path):
-            vector_db = FAISS.load_local(user_vector_path, embeddings, allow_dangerous_deserialization=True)
-            vector_db.add_texts(chunks, metadatas=metadatas) 
-        else:
-            vector_db = FAISS.from_texts(chunks, embeddings, metadatas=metadatas) 
-        vector_db.save_local(user_vector_path)
+        for meta in metadatas:
+            meta["user_id"] = user_id
+            meta["notebook_id"] = int(notebook_id)
 
-        # 🛡️ Ghi vào Database
+        # Đẩy thẳng lên Supabase pgvector
+        vector_store = SupabaseVectorStore(
+            embedding=embeddings,
+            client=supabase,
+            table_name="documents",
+            query_name="match_documents"
+        )
+        vector_store.add_texts(chunks, metadatas=metadatas)
+
         supabase.table("uploaded_files").insert({"user_id": user_id, "filename": file.filename, "notebook_id": int(notebook_id)}).execute()
         return {"status": "success", "message": f"AI đã học xong file {file.filename}!"}
     except Exception as e: 
-        print(f"🔥 [LỖI UPLOAD CRITICAL]: {str(e)}") # Báo lỗi cực mạnh ra Terminal
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống: {str(e)}")
+        print(f"🔥 LỖI UPLOAD CLOUD: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/api/files/{user_id}/{notebook_id}")
 async def get_uploaded_files(user_id: str, notebook_id: int):
@@ -74,37 +112,38 @@ async def delete_file_history(file_id: int):
         filename = res.data[0]['filename']
         notebook_id = res.data[0]['notebook_id'] 
         
-        user_vector_path = os.path.join(VECTOR_DB_ROOT, str(user_id), str(notebook_id))
-        if os.path.exists(user_vector_path):
-            vector_db = FAISS.load_local(user_vector_path, embeddings, allow_dangerous_deserialization=True)
-            ids_to_delete = [doc_id for doc_id, doc in vector_db.docstore._dict.items() if doc.metadata.get("filename") == filename]
-            if ids_to_delete:
-                vector_db.delete(ids_to_delete)
-                if not vector_db.docstore._dict:
-                    shutil.rmtree(user_vector_path)
-                else:
-                    vector_db.save_local(user_vector_path)
-        
+        # Xóa trên mây
+        supabase.table("documents").delete().eq("metadata->>filename", filename).eq("metadata->>user_id", user_id).eq("metadata->>notebook_id", str(notebook_id)).execute()
         supabase.table("uploaded_files").delete().eq("id", file_id).execute()
-        return {"status": "success", "message": f"Đã xóa vĩnh viễn tài liệu {filename}"}
+        
+        return {"status": "success", "message": f"Đã xóa tài liệu {filename}"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống khi xóa file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi xóa file: {str(e)}")
 
+# 🚀 ĐÃ NÂNG CẤP: Tìm nguồn trích dẫn trực tiếp từ Cloud
 @router.get("/api/reference")
 async def get_reference_content(user_id: str, filename: str, page: int, notebook_id: str = ""):
     try:
-        user_vector_path = os.path.join(VECTOR_DB_ROOT, str(user_id), str(notebook_id)) if notebook_id else os.path.join(VECTOR_DB_ROOT, str(user_id))
-        if not os.path.exists(user_vector_path): return {"status": "error", "data": "Không tìm thấy dữ liệu học tập."}
-
-        vector_db = FAISS.load_local(user_vector_path, embeddings, allow_dangerous_deserialization=True)
         def normalize_filename(name): return name.replace("_", "").replace(" ", "").replace("%20", "").lower()
         target_filename = normalize_filename(filename)
         
-        original_chunks = [doc.page_content for doc_id, doc in vector_db.docstore._dict.items() if normalize_filename(doc.metadata.get("filename", "")) == target_filename and doc.metadata.get("page") == page]
-        if not original_chunks: return {"status": "success", "data": "Không trích xuất được lý thuyết chi tiết cho trang này."}
+        # Truy xuất trực tiếp từ bảng documents thay vì FAISS
+        res = supabase.table("documents").select("content, metadata").eq("metadata->>user_id", user_id).eq("metadata->>notebook_id", notebook_id).execute()
+        
+        original_chunks = []
+        for doc in res.data:
+            doc_filename = normalize_filename(doc.get("metadata", {}).get("filename", ""))
+            doc_page = doc.get("metadata", {}).get("page")
+            if doc_filename == target_filename and doc_page == page:
+                original_chunks.append(doc.get("content", ""))
+
+        if not original_chunks: 
+            return {"status": "success", "data": "Không trích xuất được lý thuyết chi tiết cho trang này."}
 
         raw_theory = "\n\n...\n\n".join(original_chunks)
         format_prompt = f"Đây là văn bản thô. HÃY LÀM 2 VIỆC:\n1. Định dạng lại bằng Markdown (kẻ bảng, in đậm).\n2. TUYỆT ĐỐI GIỮ NGUYÊN 100% THÔNG TIN. KHÔNG THÊM BỚT CHỮ.\n\nVĂN BẢN THÔ:\n{raw_theory}"
         formatted_theory = call_groq(format_prompt, is_chat_mode=False, temp=0.1)
+        
         return {"status": "success", "data": formatted_theory}
-    except Exception as e: return {"status": "error", "data": f"Lỗi trích xuất: {str(e)}"}
+    except Exception as e: 
+        return {"status": "error", "data": f"Lỗi trích xuất: {str(e)}"}

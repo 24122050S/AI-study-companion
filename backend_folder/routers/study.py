@@ -1,34 +1,33 @@
 from fastapi import APIRouter, Request
 import json
 import random
-import os
 from models import WeaknessRequest
-from core import get_active_context, call_groq, extract_json_array, supabase, VECTOR_DB_ROOT, embeddings
-from langchain_community.vectorstores import FAISS
+# 🚀 ĐÃ XÓA VECTOR_DB_ROOT, FAISS và embeddings vì không cần dùng local nữa
+from core import get_active_context, call_groq, extract_json_array, supabase
 from datetime import datetime
 
 router = APIRouter()
 
-# 🚀 NÂNG CẤP LỚN: HÀM BỐC TÀI LIỆU NGẪU NHIÊN CHỐNG LẶP CÂU HỎI
+# 🚀 NÂNG CẤP: HÀM BỐC TÀI LIỆU NGẪU NHIÊN TRỰC TIẾP TỪ SUPABASE CLOUD
 def get_random_context(user_id: str, notebook_id: str, k_needed: int = 20):
-    user_vector_path = os.path.join(VECTOR_DB_ROOT, str(user_id), str(notebook_id))
-    if not os.path.exists(os.path.join(user_vector_path, "index.faiss")):
-        return ""
-        
     try:
-        vector_db = FAISS.load_local(user_vector_path, embeddings, allow_dangerous_deserialization=True)
-        res = supabase.table("uploaded_files").select("filename").eq("user_id", str(user_id)).eq("notebook_id", int(notebook_id)).execute()
-        active_files = [r['filename'] for r in res.data]
+        # Lấy toàn bộ các đoạn văn thuộc về user_id và notebook_id này trực tiếp từ bảng 'documents'
+        res = supabase.table("documents").select("content, metadata").eq("metadata->>user_id", user_id).eq("metadata->>notebook_id", str(notebook_id)).execute()
         
-        # Gom toàn bộ các đoạn văn thuộc file của dự án này
-        all_docs = [doc for doc in vector_db.docstore._dict.values() if doc.metadata.get("filename") in active_files]
-        
+        all_docs = res.data
         if all_docs:
-            # Xáo trộn và bốc ngẫu nhiên k đoạn văn bất kỳ (Không thèm quan tâm Semantic Search)
+            # Xáo trộn và bốc ngẫu nhiên k đoạn văn (chunk)
             sampled_docs = random.sample(all_docs, min(k_needed, len(all_docs)))
-            return "\n\n".join([f"Trang {d.metadata.get('page')}: {d.page_content}" for d in sampled_docs])
+            
+            formatted_docs = []
+            for d in sampled_docs:
+                page = d.get("metadata", {}).get("page", "?")
+                content = d.get("content", "")
+                formatted_docs.append(f"Trang {page}: {content}")
+                
+            return "\n\n".join(formatted_docs)
     except Exception as e:
-        print(f"Lỗi lấy context ngẫu nhiên: {e}")
+        print(f"Lỗi lấy context ngẫu nhiên từ Cloud: {e}")
     return ""
 
 
@@ -39,48 +38,67 @@ async def generate_quiz(request: Request):
         data = await request.json()
         user_id = data.get("user_id", "")
         notebook_id = data.get("notebook_id", "")
-        num_questions = data.get("num_questions", 5) 
+        num_questions = int(data.get("num_questions", 5))
         difficulty = data.get("difficulty", "Trung bình")
         
-        # 🛡️ Dùng hàm Random Context để Quiz luôn có câu hỏi mới
-        context = get_random_context(user_id, str(notebook_id), k_needed=20)
+        # 1. TẠO SỔ ĐEN
+        forbidden_concepts = []
+        try:
+            history_res = supabase.table("quiz_decks").select("questions").eq("notebook_id", int(notebook_id)).eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
+            if history_res.data:
+                for deck in history_res.data:
+                    for q in deck.get("questions", []):
+                        if "concept" in q:
+                            forbidden_concepts.append(q["concept"])
+            forbidden_concepts = list(set(forbidden_concepts))
+        except:
+            pass
+            
+        forbidden_str = ", ".join(forbidden_concepts) if forbidden_concepts else "Chưa có"
+
+        # 2. BỐC TÀI LIỆU
+        k_size = min(12, num_questions * 2) 
+        context = get_random_context(user_id, str(notebook_id), k_needed=k_size)
         
         if not context:
-            return {"data": [{"question": "Bạn chưa tải file PDF hoặc file đã bị xóa sạch! Hãy tải tài liệu mới lên nhé.", "options": ["Đã hiểu"], "answer": "Đã hiểu", "concept": "Lỗi", "source_page": "0", "explanation": "Vui lòng tải tài liệu."}]}
+            return {"data": [{"question": "Bạn chưa tải file PDF!", "options": ["Đã hiểu"], "answer": "Đã hiểu", "concept": "Lỗi", "source_page": "0", "explanation": "Vui lòng tải tài liệu."}]}
             
+        # 3. TẠO LĂNG KÍNH NGẪU NHIÊN 
+        focus_areas = [
+            "ĐÀO SÂU vào các khái niệm phụ, định nghĩa nhỏ lẻ ít người để ý",
+            "TÌM KIẾM các con số, mốc thời gian, số liệu thống kê hoặc tỷ lệ phần trăm",
+            "TẬP TRUNG vào nguyên lý hoạt động, cơ chế, hoặc các bước trong một quy trình",
+            "KHAI THÁC các ví dụ thực tế, tình huống ứng dụng, hoặc ngoại lệ",
+            "PHÂN TÍCH sự khác biệt, ưu điểm, nhược điểm, hoặc so sánh",
+            "BỐC NGẪU NHIÊN các chi tiết râu ria nằm ở cuối mỗi đoạn văn"
+        ]
+        focus_instruction = random.choice(focus_areas)
+        random_seed = random.randint(10000, 99999) 
+
         difficulty_instruction = ""
         if difficulty == "Dễ":
-            difficulty_instruction = "MỨC ĐỘ DỄ: Chỉ hỏi trực tiếp vào định nghĩa cơ bản. Đáp án sai phải CỰC KỲ VÔ LÝ để dễ loại trừ."
+            difficulty_instruction = "MỨC ĐỘ DỄ: Chỉ hỏi trực tiếp vào định nghĩa."
         elif difficulty == "Trung bình":
-            difficulty_instruction = "MỨC ĐỘ TRUNG BÌNH: CẤM hỏi kiểu định nghĩa '... là gì?'. Phải đưa ra đặc điểm, nguyên lý hoạt động, hoặc một VÍ DỤ/TÌNH HUỐNG NGẮN."
+            difficulty_instruction = "MỨC ĐỘ TRUNG BÌNH: CẤM hỏi kiểu định nghĩa. Phải đưa ra đặc điểm, ví dụ."
         elif difficulty == "Khó":
-            difficulty_instruction = """
-            - MỨC ĐỘ CỰC KHÓ (VẬN DỤNG CAO):
-            1. DẠNG CÂU HỎI BẮT BUỘC: Bắt buộc 100% phải dùng cấu trúc "Phát biểu nào sau đây là ĐÚNG (hoặc SAI) khi nói về [Khái niệm]?" hoặc "Khẳng định nào sau đây KHÔNG CHÍNH XÁC?".
-            2. CẤU TRÚC ĐÁP ÁN: Các đáp án phải là các mệnh đề/câu văn dài phân tích bản chất. 
-            3. ĐÁP ÁN BẪY: 3 mệnh đề sai phải cực kỳ tinh vi, dùng đúng thuật ngữ trong tài liệu nhưng cố tình viết sai lệch đi một nửa ý nghĩa ở cuối câu để lừa người đọc.
-            """
+            difficulty_instruction = "MỨC ĐỘ KHÓ: Bắt buộc dùng cấu trúc 'Phát biểu nào sau đây ĐÚNG/SAI?'. Đáp án bẫy cực kỳ tinh vi."
         elif difficulty == "Phòng thi ảo":
-            difficulty_instruction = """
-            - MỨC ĐỘ TỔNG HỢP (PHÒNG THI CHÍNH THỨC):
-            BẮT BUỘC TRỘN LẪN độ khó cho toàn bộ đề thi theo tỷ lệ sau:
-            1. Nhóm DỄ (30% số câu): Hỏi trực tiếp định nghĩa cơ bản, đáp án sai dễ loại trừ.
-            2. Nhóm TRUNG BÌNH (40% số câu): CẤM hỏi định nghĩa. Hãy hỏi về ví dụ, đặc điểm, hoặc nguyên lý hoạt động.
-            3. Nhóm KHÓ (30% số câu): BẮT BUỘC dùng cấu trúc "Phát biểu nào sau đây là ĐÚNG (hoặc SAI)?". Các đáp án bẫy phải cực kỳ tinh vi.
-            """
+            difficulty_instruction = "TRỘN LẪN ĐỘ KHÓ DỄ - TRUNG BÌNH - KHÓ."
 
         prompt = f"""
-        Bạn là chuyên gia khảo thí. Dựa vào TÀI LIỆU NGẪU NHIÊN sau, tạo {num_questions} câu hỏi trắc nghiệm.
+        Bạn là chuyên gia khảo thí. Dựa vào TÀI LIỆU sau, tạo {num_questions} câu hỏi trắc nghiệm.
         TÀI LIỆU: {context}
         
-        CHÚ Ý ĐỘ KHÓ: 
-        {difficulty_instruction}
+        CHÚ Ý ĐỘ KHÓ: {difficulty_instruction}
         
-        YÊU CẦU JSON BẮT BUỘC: Trả về CHỈ 1 MẢNG JSON thuần túy. 
-        Cấu trúc mẫu chuẩn:
+        ⛔ MỆNH LỆNH LÀM MỚI (Mã hạt giống: {random_seed}):
+        1. GÓC NHÌN LẦN NÀY: BẠN BẮT BUỘC PHẢI {focus_instruction}. TUYỆT ĐỐI KHÔNG hỏi các tiêu đề lớn to tát.
+        2. HẠN CHẾ TRÙNG LẶP: Học sinh đã làm các chủ đề này rồi: [{forbidden_str}]. Hãy cố gắng né chúng ra!
+        
+        YÊU CẦU JSON BẮT BUỘC: Trả về CHỈ 1 MẢNG JSON thuần túy.
         [
           {{
-            "question": "Nội dung câu hỏi?", 
+            "question": "Nội dung?", 
             "options": ["A", "B", "C", "D"], 
             "answer": "A",
             "concept": "Tên khái niệm (Ngắn gọn)",
@@ -88,29 +106,21 @@ async def generate_quiz(request: Request):
             "explanation": "Giải thích chi tiết."
           }}
         ]
-        
-        LƯU Ý: Trường "answer" phải CHÉP LẠI Y HỆT NỘI DUNG CHỮ của đáp án đúng.
         """
         
-        raw_text = call_groq(prompt, is_chat_mode=False, temp=0.8).replace("```json", "").replace("```", "").strip()
+        raw_text = call_groq(prompt, is_chat_mode=False, temp=0.85).replace("```json", "").replace("```", "").strip()
+        quiz_data = extract_json_array(json.loads(raw_text), ["question", "options", "answer", "concept", "source_page", "explanation"]) 
         
-        required_keys = ["question", "options", "answer", "concept", "source_page", "explanation"]
-        quiz_data = extract_json_array(json.loads(raw_text), required_keys) 
-        
-        time_str = datetime.now().strftime("%H:%M %d/%m")
-        deck_title = f"Đề {difficulty} ({time_str})"
+        deck_title = f"Đề {difficulty} ({datetime.now().strftime('%H:%M %d/%m')})"
         res = supabase.table("quiz_decks").insert({
-            "user_id": user_id, 
-            "notebook_id": int(notebook_id), 
-            "difficulty": difficulty,
-            "title": deck_title,
-            "questions": quiz_data 
+            "user_id": user_id, "notebook_id": int(notebook_id), "difficulty": difficulty, "title": deck_title, "questions": quiz_data 
         }).execute()
 
         return {"status": "success", "deck_id": res.data[0]['id'], "data": quiz_data}
     except Exception as e:
-        return {"data": [{"question": "Hệ thống bị gián đoạn. Xin hãy thử lại!", "options": ["OK"], "answer": "OK", "concept": "Lỗi", "source_page": "0", "explanation": str(e)}]}
+        return {"data": [{"question": "Hệ thống bị gián đoạn.", "options": ["OK"], "answer": "OK", "concept": "Lỗi", "source_page": "0", "explanation": str(e)}]}
 
+# ==================== CÁC API LỊCH SỬ QUIZ ====================
 @router.get("/api/quiz/history/{notebook_id}")
 async def get_quiz_history(notebook_id: int, user_id: str):
     res = supabase.table("quiz_decks").select("id, title, difficulty, created_at").eq("notebook_id", notebook_id).eq("user_id", user_id).order("created_at", desc=True).execute()
@@ -120,9 +130,7 @@ async def get_quiz_history(notebook_id: int, user_id: str):
 async def get_quiz_deck(deck_id: int, user_id: str):
     try:
         res = supabase.table("quiz_decks").select("questions").eq("id", deck_id).eq("user_id", user_id).execute()
-        if not res.data:
-            return {"status": "error", "message": "Không tìm thấy bộ đề."}
-        return {"status": "success", "data": res.data[0]['questions']}
+        return {"status": "success", "data": res.data[0]['questions']} if res.data else {"status": "error", "message": "Không tìm thấy."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -131,45 +139,21 @@ async def get_quiz_deck(deck_id: int, user_id: str):
 async def analyze_weakness(request: WeaknessRequest):
     try:
         if not request.wrong_questions:
-            return {"status": "success", "data": {"report": "🎉 Tuyệt vời! Bạn đã nắm vững 100% các khái niệm trong bài test này.", "quiz": []}}
-            
+            return {"status": "success", "data": {"report": "Tuyệt vời!", "quiz": []}}
         search_query = " ".join(request.wrong_questions)
         context = get_active_context(search_query, request.user_id, request.notebook_id, k_needed=15)
         
         prompt = f"""
-        Học sinh vừa làm sai các câu hỏi liên quan đến nội dung sau: 
-        {request.wrong_questions}
-        
+        Học sinh sai các câu hỏi liên quan: {request.wrong_questions}
         TÀI LIỆU CƠ SỞ: {context}
-        
-        YÊU CẦU BẮT BUỘC CỦA CHUYÊN GIA SƯ PHẠM:
-        1. "report": Phân tích gộp các lỗi sai theo NHÓM KHÁI NIỆM (Concept).
-        2. "quiz": Tạo ra 3-5 câu hỏi trắc nghiệm mới tinh tập trung XÓA MÙ KHOẢNG TRỐNG KIẾN THỨC.
-        
-        Trả đúng JSON: 
-        {{
-          "report": "Phân tích theo khái niệm...", 
-          "quiz": [
-            {{
-              "question": "...", 
-              "options": ["A", "B"], 
-              "answer": "A", 
-              "concept": "Tên khái niệm", 
-              "source_page": "Trang X", 
-              "explanation": "..."
-            }}
-          ]
-        }}
+        Trả JSON: {{"report": "Phân tích theo khái niệm...", "quiz": [{{"question": "...", "options": ["A", "B"], "answer": "A", "concept": "...", "source_page": "...", "explanation": "..."}}]}}
         """
         raw_text = call_groq(prompt).replace("```json", "").replace("```", "").strip()
         parsed_data = json.loads(raw_text)
-        
-        required_keys = ["question", "options", "answer", "concept", "source_page", "explanation"]
-        valid_quiz = extract_json_array(parsed_data.get("quiz", []), required_keys)
-        
+        valid_quiz = extract_json_array(parsed_data.get("quiz", []), ["question", "options", "answer", "concept", "source_page", "explanation"])
         return {"status": "success", "data": {"report": parsed_data.get("report", ""), "quiz": valid_quiz}}
     except Exception as e:
-        return {"status": "error", "message": f"Lỗi phân tích: {str(e)}"}
+        return {"status": "error", "message": str(e)}
 
 # ==================== KHU VỰC FLASHCARDS ====================
 @router.post("/api/flashcards")
@@ -178,45 +162,61 @@ async def generate_flashcards(request: Request):
         data = await request.json()
         user_id = data.get("user_id", "")
         notebook_id = data.get("notebook_id", "")
-        num_cards = data.get("num_cards", 5)
+        num_cards = int(data.get("num_cards", 5))
 
-        # 🛡️ Dùng hàm Random Context để Flashcard luôn lấy các khái niệm mới
-        context = get_random_context(user_id, str(notebook_id), k_needed=20)
+        # 1. TẠO SỔ ĐEN
+        forbidden_terms = []
+        try:
+            history_res = supabase.table("flashcard_decks").select("cards").eq("notebook_id", int(notebook_id)).eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
+            if history_res.data:
+                for deck in history_res.data:
+                    for c in deck.get("cards", []):
+                        if "term" in c:
+                            forbidden_terms.append(c["term"])
+            forbidden_terms = list(set(forbidden_terms))
+        except:
+            pass
+            
+        forbidden_str = ", ".join(forbidden_terms) if forbidden_terms else "Chưa có"
+
+        # 2. BỐC TÀI LIỆU
+        k_size = min(15, num_cards * 2)
+        context = get_random_context(user_id, str(notebook_id), k_needed=k_size)
         
         if not context: 
             return {"data": [{"term": "Chưa tải PDF", "definition": "Vui lòng tải tài liệu"}]}
             
+        # 3. LĂNG KÍNH NGẪU NHIÊN 
+        focus_areas = [
+            "Tập trung vào các thuật ngữ phụ, ít nổi bật",
+            "Tìm các con số quan trọng, năm, tỷ lệ phần trăm",
+            "Tìm các tên người, tác giả, hoặc công ty được nhắc đến",
+            "Khai thác các định nghĩa ngách ở cuối các đoạn văn"
+        ]
+        focus_instruction = random.choice(focus_areas)
+        random_seed = random.randint(10000, 99999)
+
         prompt = f"""
-        Dựa vào TÀI LIỆU NGẪU NHIÊN sau, tạo {num_cards} flashcard chứa thuật ngữ và định nghĩa.
+        Dựa vào TÀI LIỆU sau, tạo {num_cards} flashcard chứa thuật ngữ và định nghĩa.
         TÀI LIỆU: {context}
         
-        CHÚ Ý ĐẶC BIỆT:
-        - TUYỆT ĐỐI KHÔNG lặp lại những khái niệm quen thuộc. Hãy bám vào đoạn tài liệu ngẫu nhiên trên để tìm các ý mới.
-        - Trả JSON mảng thuần túy: [{{"term": "A", "definition": "B"}}]
+        ⛔ MỆNH LỆNH ĐỔI MỚI (Mã hạt giống: {random_seed}):
+        1. GÓC NHÌN: BẠN HÃY {focus_instruction}. KHÔNG ĐƯỢC chỉ bốc các tiêu đề lớn ở đầu bài.
+        2. HẠN CHẾ TRÙNG LẶP: Đã học các thuật ngữ này: [{forbidden_str}]. Hãy cố gắng tìm từ mới!
+        
+        Trả JSON mảng thuần túy: [{{"term": "A", "definition": "B"}}]
         """
         
-        # Tăng nhiệt độ (Temp) lên 0.9 để kích thích AI dùng từ ngữ đa dạng hơn
         raw_text = call_groq(prompt, is_chat_mode=False, temp=0.9).replace("```json", "").replace("```", "").strip() 
         flashcards = extract_json_array(json.loads(raw_text), ["term", "definition"])
         
         current_time = datetime.now().isoformat()
         for card in flashcards:
-            card.update({
-                "ease": 2.5,        
-                "interval": 0,      
-                "reps": 0,          
-                "lapses": 0,        
-                "due_date": current_time, 
-                "last_reviewed": None
-            })
+            card.update({"ease": 2.5, "interval": 0, "reps": 0, "lapses": 0, "due_date": current_time, "last_reviewed": None})
         
-        time_str = datetime.now().strftime("%H:%M %d/%m")
-        deck_title = f"Bộ Flashcard ({time_str})"
+        deck_title = f"Bộ Flashcard ({datetime.now().strftime('%H:%M %d/%m')})"
         res = supabase.table("flashcard_decks").insert({
-            "user_id": user_id, 
-            "notebook_id": int(notebook_id), 
-            "title": deck_title,
-            "cards": flashcards
+            "user_id": user_id, "notebook_id": int(notebook_id), "title": deck_title, "cards": flashcards
         }).execute()
             
         return {"status": "success", "deck_id": res.data[0]['id'], "data": flashcards}
@@ -232,9 +232,7 @@ async def get_flashcard_history(notebook_id: int, user_id: str):
 async def get_flashcard_deck(deck_id: int, user_id: str):
     try:
         res = supabase.table("flashcard_decks").select("cards").eq("id", deck_id).eq("user_id", user_id).execute()
-        if not res.data:
-            return {"status": "error", "message": "Không tìm thấy bộ thẻ."}
-        return {"status": "success", "data": res.data[0]['cards']} 
+        return {"status": "success", "data": res.data[0]['cards']} if res.data else {"status": "error", "message": "Không tìm thấy."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -242,9 +240,7 @@ async def get_flashcard_deck(deck_id: int, user_id: str):
 async def sync_flashcard_progress(deck_id: int, request: Request):
     try:
         data = await request.json()
-        user_id = data.get("user_id")
-        updated_cards = data.get("cards")
-        supabase.table("flashcard_decks").update({"cards": updated_cards}).eq("id", deck_id).eq("user_id", user_id).execute()
+        supabase.table("flashcard_decks").update({"cards": data.get("cards")}).eq("id", deck_id).eq("user_id", data.get("user_id")).execute()
         return {"status": "success", "message": "Đã đồng bộ!"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -254,18 +250,14 @@ async def sync_flashcard_progress(deck_id: int, request: Request):
 async def generate_roadmap(request: Request):
     try:
         data = await request.json()
-        user_id = data.get("user_id", "")
+        search_query = "Tóm tắt nội dung chính, mục lục, các chương, chủ đề cốt lõi"
+        context = get_active_context(search_query, data.get("user_id", ""), data.get("notebook_id", ""), k_needed=15)
         
-        # Roadmap vẫn giữ nguyên Semantic Search vì cần cái nhìn tổng quan toàn diện
-        search_query = "Tóm tắt nội dung chính, mục lục, các chương, các phần, chủ đề cốt lõi toàn bài"
-        context = get_active_context(search_query, user_id, data.get("notebook_id", ""), k_needed=15)
-        
-        if not context:
-            return {"data": [{"day": "Lỗi", "title": "Chưa có PDF", "tasks": ["Tải tài liệu lên trang chủ trước nha!"]}]}
+        if not context: return {"data": [{"day": "Lỗi", "title": "Chưa có PDF", "tasks": ["Tải tài liệu lên!"]}]}
             
-        prompt = f"Dựa vào TÀI LIỆU sau, tạo Lộ trình học 5 giai đoạn bao quát toàn bộ tài liệu.\nTÀI LIỆU: {context}\nYÊU CẦU: Trả về CHỈ 1 MẢNG JSON.\n[{{\"day\": \"Giai đoạn 1\", \"title\": \"Nắm bắt\", \"tasks\": [\"A\", \"B\"]}}]"
+        prompt = f"Dựa vào TÀI LIỆU sau, tạo Lộ trình học 5 giai đoạn.\\nTÀI LIỆU: {context}\\nTrả về 1 MẢNG JSON.\\n[{{\"day\": \"Giai đoạn 1\", \"title\": \"...\", \"tasks\": [\"A\"]}}]"
         raw_text = call_groq(prompt).replace("```json", "").replace("```", "").strip()
         roadmap_data = extract_json_array(json.loads(raw_text), ["day", "title", "tasks"]) 
         return {"data": roadmap_data}
     except Exception:
-        return {"data": [{"day": "Lỗi hệ thống", "title": "AI từ chối định dạng", "tasks": ["Xin bấm tạo lại lộ trình!"]}]}
+        return {"data": [{"day": "Lỗi hệ thống", "title": "AI từ chối định dạng", "tasks": ["Xin bấm tạo lại!"]}]}

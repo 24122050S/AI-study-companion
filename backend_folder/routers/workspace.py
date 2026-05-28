@@ -2,9 +2,6 @@ from fastapi import APIRouter
 from datetime import datetime, timedelta
 from models import ScoreRequest, NoteRequest, NotebookRequest
 from core import supabase, call_groq
-import os
-import shutil
-from core import VECTOR_DB_ROOT
 from fastapi import Request
 
 router = APIRouter()
@@ -26,33 +23,24 @@ async def rename_notebook(notebook_id: int, request: Request):
         if not new_title:
             return {"status": "error", "message": "Tên không được để trống"}
             
-        # Cập nhật tên mới vào Supabase
         supabase.table("notebooks").update({"title": new_title}).eq("id", notebook_id).execute()
         return {"status": "success", "message": "Đã đổi tên thành công!"}
     except Exception as e:
         return {"status": "error", "message": f"Lỗi hệ thống: {str(e)}"}
 
-# 🛠️ ĐÃ CHỈNH SỬA: Thêm message phản hồi rõ ràng để Flutter xử lý hiển thị SnackBar tốt hơn
 @router.delete("/api/notebooks/{notebook_id}")
 async def delete_notebook(notebook_id: int):
     try:
-        # 1. Tìm user_id của notebook để định vị chính xác folder chứa dữ liệu Vector
-        res = supabase.table("notebooks").select("user_id").eq("id", notebook_id).execute()
-        if res.data:
-            user_id = res.data[0]['user_id']
-            path = os.path.join(VECTOR_DB_ROOT, user_id, str(notebook_id))
-            # Xóa sạch folder vector lưu cục bộ trên máy tính
-            if os.path.exists(path): 
-                shutil.rmtree(path)
-                
-        # 2. 🛡️ FAIL-SAFE: TỰ ĐỘNG DỌN SẠCH DỮ LIỆU MỒ CÔI (ORPHANED DATA)
-        # Quét sạch các bảng phụ thuộc trước khi xóa bảng chính để chống rác dữ liệu
+        # 1. 🛡️ DỌN SẠCH DỮ LIỆU PHỤ THUỘC (Lịch sử chat, ghi chú, đề thi...)
         supabase.table("chat_history").delete().eq("notebook_id", notebook_id).execute()
         supabase.table("uploaded_files").delete().eq("notebook_id", notebook_id).execute()
         supabase.table("notes").delete().eq("notebook_id", notebook_id).execute()
         supabase.table("quiz_decks").delete().eq("notebook_id", notebook_id).execute()
         supabase.table("flashcard_decks").delete().eq("notebook_id", notebook_id).execute()
                 
+        # 2. 🚀 ĐÃ SỬA: Lên bảng 'documents' trên Cloud để xóa toàn bộ Não AI của dự án này
+        supabase.table("documents").delete().eq("metadata->>notebook_id", str(notebook_id)).execute()
+
         # 3. Tiến hành xóa notebook trong database Supabase
         supabase.table("notebooks").delete().eq("id", notebook_id).execute()
         
@@ -62,22 +50,17 @@ async def delete_notebook(notebook_id: int):
 
 @router.post("/api/score")
 async def save_score(request: ScoreRequest):
-    try:
-        supabase.table("history").insert({
-            "user_id": request.user_id,
-            "topic": request.topic,
-            "score": request.score,
-            "total": request.total,
-            "percentage": int((request.score / request.total) * 100)
-        }).execute()
-        return {"status": "success"}
-    except Exception as e:
-        print(f"🔥 LỖI LƯU ĐIỂM: {str(e)}") # In thẳng ra Terminal Python để bắt mạch
-        return {"status": "error", "message": str(e)}
+    supabase.table("history").insert({
+        "user_id": request.user_id,
+        "topic": request.topic,
+        "score": request.score,
+        "total": request.total,
+        "percentage": int((request.score / request.total) * 100)
+    }).execute()
+    return {"status": "success"}
 
 @router.get("/api/dashboard/{user_id}")
 async def get_dashboard(user_id: str):
-    # Giữ nguyên logic lấy dữ liệu dashboard của bạn
     res = supabase.table("history").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
     if not res.data: return {"status": "success", "streak": 0, "notifications": []}
     
@@ -112,10 +95,9 @@ async def get_recommendation(user_id: str):
 
 @router.post("/api/notes")
 async def add_note(request: NoteRequest):
-    # ĐÃ SỬA: Lưu thêm notebook_id vào bảng dữ liệu
     supabase.table("notes").insert({
         "user_id": request.user_id, 
-        "notebook_id": int(request.notebook_id),  # 👈 THÊM DÒNG NÀY
+        "notebook_id": int(request.notebook_id),  
         "title": request.title, 
         "content": request.content
     }).execute()
@@ -123,10 +105,8 @@ async def add_note(request: NoteRequest):
 
 @router.get("/api/notes/{user_id}/{notebook_id}")
 async def get_notes(user_id: str, notebook_id: int):
-    # ĐÃ SỬA: Lọc thêm điều kiện eq("notebook_id", notebook_id)
     res = supabase.table("notes").select("*").eq("user_id", user_id).eq("notebook_id", notebook_id).order("created_at", desc=True).execute()
     return res.data
-
 
 @router.delete("/api/notes/{note_id}")
 async def delete_note(note_id: int):
