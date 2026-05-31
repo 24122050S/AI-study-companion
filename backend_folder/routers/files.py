@@ -147,3 +147,5 @@ async def get_reference_content(user_id: str, filename: str, page: int, notebook
         return {"status": "success", "data": formatted_theory}
     except Exception as e: 
         return {"status": "error", "data": f"Lỗi trích xuất: {str(e)}"}
+    
+    

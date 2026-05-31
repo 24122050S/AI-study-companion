@@ -13,7 +13,9 @@ class QuizScreen extends StatefulWidget {
   final String username; 
   final String difficulty;
   final String notebookId; 
+  final String quizType;
   final List<dynamic>? preloadedQuestions; 
+  final String? focusTopic; 
 
   const QuizScreen({
     super.key, 
@@ -23,7 +25,9 @@ class QuizScreen extends StatefulWidget {
     required this.username,
     required this.notebookId, 
     this.difficulty = "Trung bình",
+    this.quizType = "Trộn lẫn",
     this.preloadedQuestions, 
+    this.focusTopic, 
   });
 
   @override
@@ -37,6 +41,7 @@ class _QuizScreenState extends State<QuizScreen> {
   bool _isFinished = false;
 
   Map<int, String> _selectedAnswers = {};
+  Map<int, bool> _aiShortAnswerResults = {}; 
   Timer? _timer;
   late int _secondsRemaining;
 
@@ -44,7 +49,7 @@ class _QuizScreenState extends State<QuizScreen> {
   void initState() {
     super.initState();
     _secondsRemaining = widget.timeLimit;
-    _fetchQuiz(); // Tự động gọi hàm tải đề khi mở màn hình
+    _fetchQuiz(); 
   }
 
   void _startTimer() {
@@ -73,6 +78,7 @@ class _QuizScreenState extends State<QuizScreen> {
       _isLoading = true;
       _questions = [];
       _selectedAnswers = {};
+      _aiShortAnswerResults = {};
       _isFinished = false;
       _secondsRemaining = widget.timeLimit;
     });
@@ -94,7 +100,9 @@ class _QuizScreenState extends State<QuizScreen> {
           "user_id": widget.username, 
           "notebook_id": widget.notebookId, 
           "num_questions": widget.numQuestions, 
-          "difficulty": widget.difficulty
+          "difficulty": widget.difficulty,
+          "quiz_type": widget.quizType,
+          "focus_topic": widget.focusTopic 
         }),
       );
 
@@ -118,12 +126,29 @@ class _QuizScreenState extends State<QuizScreen> {
 
   Future<void> _analyzeWeakness() async {
     List<String> wrongQuestions = [];
+    List<String> correctConcepts = []; 
+
     for (int i = 0; i < _questions.length; i++) {
-      if (_selectedAnswers[i] != _questions[i]['answer']) {
-        // 🚀 NÂNG CẤP: Gửi kèm tên Khái Niệm lên cho AI phân tích sâu hơn
-        String concept = _questions[i]['concept'] ?? "Kiến thức chung";
-        String question = _questions[i]['question'];
+      String type = _questions[i]['type'] ?? "";
+      bool isCorrect = false;
+      
+      if (type == 'short_answer') {
+        isCorrect = _aiShortAnswerResults[i] ?? false;
+      } else {
+        String userAnswer = (_selectedAnswers[i] ?? "").trim().toLowerCase().replaceAll(' | ', '|').replaceAll(' |', '|').replaceAll('| ', '|');
+        String correctAnswer = (_questions[i]['answer'] ?? "").toString().trim().toLowerCase().replaceAll(' | ', '|').replaceAll(' |', '|').replaceAll('| ', '|');
+        isCorrect = userAnswer == correctAnswer;
+      }
+
+      String concept = _questions[i]['concept'] ?? "Kiến thức chung";
+      String question = _questions[i]['question'];
+
+      if (!isCorrect) {
         wrongQuestions.add("[$concept] - $question");
+      } else {
+        if (!correctConcepts.contains(concept) && concept != "Kiến thức chung") {
+          correctConcepts.add(concept); 
+        }
       }
     }
 
@@ -143,20 +168,26 @@ class _QuizScreenState extends State<QuizScreen> {
           "user_id": widget.username,
           "notebook_id": widget.notebookId, 
           "wrong_questions": wrongQuestions,
+          "correct_questions": correctConcepts, 
         }),
       );
 
       if (!mounted) return;
-      Navigator.pop(context); 
+      Navigator.pop(context);
 
       if (response.statusCode == 200) {
-        final data = jsonDecode(utf8.decode(response.bodyBytes))['data'];
-        String report = data['report'] ?? "Không có báo cáo.";
-        List<dynamic> remedialQuiz = data['quiz'] ?? [];
-
-        _showReportDialog(report, remedialQuiz);
+        final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+        
+        if (decoded['status'] == 'success') {
+           final data = decoded['data'];
+           String report = data['report'] ?? "Không có báo cáo.";
+           List<dynamic> remedialQuiz = data['quiz'] ?? [];
+           _showReportDialog(report, remedialQuiz);
+        } else {
+           _showError(decoded['message'] ?? "Lỗi phân tích từ Server.");
+        }
       } else {
-        _showError("Lỗi phân tích từ Server.");
+        _showError("Lỗi máy chủ: ${response.statusCode}");
       }
     } catch (e) {
       if (!mounted) return;
@@ -180,6 +211,7 @@ class _QuizScreenState extends State<QuizScreen> {
         ),
         content: SizedBox(
           width: 400,
+          height: 400, 
           child: SingleChildScrollView(
             child: MarkdownBody(
               data: report,
@@ -228,12 +260,72 @@ class _QuizScreenState extends State<QuizScreen> {
     _timer?.cancel();
     if (_isFinished) return;
 
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        content: const Row(
+          children: [
+            CircularProgressIndicator(color: Colors.orange),
+            SizedBox(width: 20),
+            Expanded(child: Text("Giám khảo AI đang chấm bài tự luận, vui lòng đợi...", style: TextStyle(fontWeight: FontWeight.w500))),
+          ],
+        ),
+      ),
+    );
+
     int score = 0;
+    List<Map<String, dynamic>> shortAnswersToGrade = [];
+    List<int> shortAnswerIndices = [];
+
     for (int i = 0; i < _questions.length; i++) {
-      if (_selectedAnswers[i] == _questions[i]['answer']) {
-        score++;
+      String type = _questions[i]['type'] ?? "";
+      String userAnswer = (_selectedAnswers[i] ?? "").trim();
+      String correctAnswer = (_questions[i]['answer'] ?? "").toString().trim();
+
+      if (type == 'short_answer') {
+        shortAnswersToGrade.add({
+          "question": _questions[i]['question'],
+          "correct_answer": correctAnswer,
+          "user_answer": userAnswer
+        });
+        shortAnswerIndices.add(i); 
+      } else {
+        String cleanUser = userAnswer.toLowerCase().replaceAll(' | ', '|').replaceAll(' |', '|').replaceAll('| ', '|');
+        String cleanCorrect = correctAnswer.toLowerCase().replaceAll(' | ', '|').replaceAll(' |', '|').replaceAll('| ', '|');
+        if (cleanUser == cleanCorrect) {
+          score++;
+        }
       }
     }
+
+    if (shortAnswersToGrade.isNotEmpty) {
+      try {
+        final response = await http.post(
+          Uri.parse("${ApiConstants.baseUrl}/api/quiz/grade_short_answers"),
+          headers: {"Content-Type": "application/json"},
+          body: jsonEncode({"items": shortAnswersToGrade}),
+        );
+
+        if (response.statusCode == 200) {
+          final data = jsonDecode(utf8.decode(response.bodyBytes));
+          List<dynamic> aiResults = data["results"] ?? [];
+          
+          for (int k = 0; k < aiResults.length; k++) {
+            int qIndex = shortAnswerIndices[k];
+            bool isCorrect = aiResults[k] == true;
+            _aiShortAnswerResults[qIndex] = isCorrect; 
+            if (isCorrect) {
+              score++;
+            }
+          }
+        }
+      } catch (e) { print("Lỗi kết nối Trọng tài AI: $e"); }
+    }
+
+    if (!mounted) return;
+    Navigator.pop(context); 
 
     setState(() => _isFinished = true);
 
@@ -243,14 +335,60 @@ class _QuizScreenState extends State<QuizScreen> {
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
           "user_id": widget.username,
+          "notebook_id": widget.notebookId, 
           "topic": widget.modeName,
           "score": score,
           "total": _questions.length
         }),
       );
-    } catch (e) {
-      print("Lỗi lưu điểm: $e");
-    }
+
+      // 🚀 ĐẶT BOM HẸN GIỜ NHẮC NHỞ ÔN TẬP (4 TIẾNG SAU MỚI HIỆN)
+      if (widget.focusTopic != null) {
+        http.post(
+          Uri.parse("${ApiConstants.baseUrl}/api/notifications"),
+          headers: {"Content-Type": "application/json"},
+          body: jsonEncode({
+            "user_id": widget.username,
+            "notebook_id": widget.notebookId,
+            "title": "⏰ Đến giờ ôn tập rồi!",
+            "message": "Đã 4 tiếng kể từ khi bạn học '${widget.focusTopic}'. Theo đường cong lãng quên, đây là lúc não bộ cần gợi nhớ. Hãy làm 1 bài Quiz nhỏ nhé!",
+            "type": "warning",
+            "delay_hours": 4 
+          }),
+        ).catchError((e) => print("Lỗi đặt lịch: $e"));
+
+        final gateResponse = await http.post(
+          Uri.parse("${ApiConstants.baseUrl}/api/roadmap/submit_gate"),
+          headers: {"Content-Type": "application/json"},
+          body: jsonEncode({
+            "user_id": widget.username,
+            "notebook_id": widget.notebookId,
+            "topic": widget.focusTopic, 
+            "score": score,
+            "total": _questions.length
+          }),
+        );
+        
+        if (gateResponse.statusCode == 200) {
+           final gateData = jsonDecode(utf8.decode(gateResponse.bodyBytes));
+           if (!mounted) return;
+           if (gateData['action'] == 'unlocked' || gateData['action'] == 'completed') {
+               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                 content: Text("🎉 ${gateData['message']}"),
+                 backgroundColor: Colors.green,
+                 duration: const Duration(seconds: 5),
+               ));
+           } else if (gateData['action'] == 'blocked') {
+               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                 content: Text("⚠️ ${gateData['message']}"),
+                 backgroundColor: Colors.red,
+                 duration: const Duration(seconds: 6),
+               ));
+           }
+        }
+      }
+
+    } catch (e) { print("Lỗi lưu điểm: $e"); }
 
     _showResultDialog(score);
   }
@@ -285,16 +423,11 @@ class _QuizScreenState extends State<QuizScreen> {
                 },
                 child: const Text("Về trang chủ", style: TextStyle(color: Colors.grey)),
               ),
-              
               ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-                onPressed: () {
-                  Navigator.pop(context); 
-                  // Khi tắt popup, mảng _isFinished đã là true, giao diện sẽ tự xổ Giải thích ra
-                },
+                onPressed: () => Navigator.pop(context),
                 child: const Text("Xem đáp án & Giải thích", style: TextStyle(color: Colors.white)),
               ),
-
               ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
                 onPressed: () {
@@ -303,7 +436,6 @@ class _QuizScreenState extends State<QuizScreen> {
                 },
                 child: const Text("Làm lại", style: TextStyle(color: Colors.white)),
               ),
-
               if (score < _questions.length)
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
@@ -356,7 +488,7 @@ class _QuizScreenState extends State<QuizScreen> {
       body: _isLoading
           ? Center(child: CircularProgressIndicator(color: themeColor))
           : _questions.isEmpty
-              ? const Center(child: Text("Đang tải dữ liệu...")) // Đã bỏ nút Bắt Đầu thừa thãi
+              ? const Center(child: Text("Đang tải dữ liệu...")) 
               : _buildQuizContent(themeColor),
       floatingActionButton: (_questions.isNotEmpty && !_isFinished)
           ? FloatingActionButton.extended(
@@ -384,7 +516,6 @@ class _QuizScreenState extends State<QuizScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // 🚀 NÂNG CẤP: HIỂN THỊ TAG KHÁI NIỆM VÀ NGUỒN (Nếu AI có gửi về)
                 if (q['concept'] != null || q['source_page'] != null)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 12.0),
@@ -408,38 +539,221 @@ class _QuizScreenState extends State<QuizScreen> {
                     ),
                   ),
 
-                Text("Câu ${index + 1}: ${q['question']}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                if (q['type'] != 'fill_in_blank')
+                  Text("Câu ${index + 1}: ${q['question']}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                 const Divider(),
-                ...List<Widget>.from(q['options'].map((opt) {
-                  return RadioListTile<String>(
-                    title: Text(opt),
-                    value: opt,
-                    groupValue: _selectedAnswers[index],
-                    activeColor: color,
-                    onChanged: _isFinished ? null : (val) {
-                      setState(() {
-                        _selectedAnswers[index] = val!;
-                      });
-                    },
-                  );
-                })),
                 
-                // 🚀 NÂNG CẤP: KHU VỰC HIỂN THỊ ĐÁP ÁN VÀ GIẢI THÍCH CHI TIẾT
+                Builder(
+                  builder: (context) {
+                    String type = q['type'] ?? 'multiple_choice';
+
+                    if (type == 'multiple_choice' || type == 'true_false') {
+                      return Column(
+                        children: List<Widget>.from(q['options'].map((opt) {
+                          return RadioListTile<String>(
+                            title: Text(opt.toString()),
+                            value: opt.toString(),
+                            groupValue: _selectedAnswers[index],
+                            activeColor: color,
+                            onChanged: _isFinished ? null : (val) {
+                              setState(() => _selectedAnswers[index] = val!);
+                            },
+                          );
+                        })),
+                      );
+                    } 
+                    
+                    else if (type == 'fill_in_blank') {
+                      List<dynamic> dragOptions = q['options'] ?? [];
+                      
+                      List<String> parts = q['question'].toString().split("___");
+                      int numBlanks = parts.length > 1 ? parts.length - 1 : 0;
+
+                      String currentAnsStr = _selectedAnswers[index] ?? "";
+                      List<String> currentSelections = currentAnsStr.split("|");
+                      if (currentSelections.length < numBlanks) {
+                        List<String> newSelections = List.filled(numBlanks, "");
+                        for(int i = 0; i < currentSelections.length; i++) {
+                          if (i < numBlanks) newSelections[i] = currentSelections[i];
+                        }
+                        currentSelections = newSelections;
+                      }
+
+                      List<Widget> paragraphWidgets = [];
+                      for (int i = 0; i < parts.length; i++) {
+                        if (parts[i].isNotEmpty) {
+                          paragraphWidgets.add(
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              child: Text(parts[i], style: const TextStyle(fontSize: 16, height: 1.6)),
+                            )
+                          );
+                        }
+                        if (i < numBlanks) {
+                          String currentSelection = currentSelections[i];
+                          paragraphWidgets.add(
+                            DragTarget<String>(
+                              builder: (context, candidateData, rejectedData) {
+                                return GestureDetector(
+                                  onTap: () {
+                                     if (!_isFinished) {
+                                       setState(() {
+                                         currentSelections[i] = "";
+                                         _selectedAnswers[index] = currentSelections.join("|");
+                                       });
+                                     }
+                                  },
+                                  child: Container(
+                                    margin: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: currentSelection.isEmpty ? Colors.grey.shade100 : Colors.blue.shade50,
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: candidateData.isNotEmpty 
+                                          ? Colors.orange 
+                                          : (currentSelection.isEmpty ? Colors.grey.shade400 : Colors.blue)
+                                      ),
+                                    ),
+                                    child: Text(
+                                      currentSelection.isEmpty ? "${i + 1}" : currentSelection,
+                                      style: TextStyle(
+                                        color: currentSelection.isEmpty ? Colors.grey : Colors.blue.shade900, 
+                                        fontWeight: FontWeight.bold
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                              onAcceptWithDetails: (details) {
+                                if (!_isFinished) {
+                                  setState(() {
+                                    currentSelections[i] = details.data;
+                                    _selectedAnswers[index] = currentSelections.join("|");
+                                  });
+                                }
+                              },
+                            )
+                          );
+                        }
+                      }
+
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text("Câu ${index + 1}: Kéo từ thích hợp vào các ô trống", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                            const SizedBox(height: 15),
+                            
+                            Wrap(
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: paragraphWidgets,
+                            ),
+                            const SizedBox(height: 25),
+                            
+                            if (!_isFinished)
+                              Wrap(
+                                spacing: 10,
+                                runSpacing: 10,
+                                children: dragOptions.map((opt) {
+                                  String optStr = opt.toString();
+                                  bool isUsed = currentSelections.contains(optStr);
+                                  
+                                  return isUsed ? const SizedBox.shrink() : Draggable<String>(
+                                    data: optStr,
+                                    feedback: Material(
+                                      color: Colors.transparent,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
+                                        decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(8)),
+                                        child: Text(optStr, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                                      ),
+                                    ),
+                                    childWhenDragging: Opacity(
+                                      opacity: 0.3, 
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
+                                        decoration: BoxDecoration(color: Colors.grey, borderRadius: BorderRadius.circular(8)),
+                                        child: Text(optStr, style: const TextStyle(color: Colors.white)),
+                                      )
+                                    ),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
+                                      decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(8), border: Border.all(color: color)),
+                                      child: Text(optStr, style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+                                    ),
+                                  );
+                                }).toList(),
+                              )
+                          ],
+                        ),
+                      );
+                    } 
+                    
+                    else {
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+                        child: TextField(
+                          enabled: !_isFinished, 
+                          decoration: InputDecoration(
+                            hintText: "Nhập câu trả lời của bạn...",
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                            filled: true,
+                            fillColor: _isFinished ? Colors.grey.shade100 : Colors.white,
+                            prefixIcon: const Icon(Icons.edit_note, color: Colors.purple),
+                          ),
+                          onChanged: (val) {
+                            _selectedAnswers[index] = val;
+                          },
+                        ),
+                      );
+                    }
+                  }
+                ),
+                
                 if (_isFinished) ...[
                   Padding(
-                    padding: const EdgeInsets.only(top: 8.0),
-                    child: Text(
-                      _selectedAnswers[index] == q['answer'] 
-                        ? "✅ Tuyệt vời! Bạn đã chọn đúng." 
-                        : "❌ Đáp án đúng là: ${q['answer']}",
-                      style: TextStyle(
-                        color: _selectedAnswers[index] == q['answer'] ? Colors.green : Colors.red,
-                        fontWeight: FontWeight.bold
-                      ),
+                    padding: const EdgeInsets.only(top: 15.0),
+                    child: Builder(
+                      builder: (context) {
+                        String type = q['type'] ?? 'multiple_choice';
+                        bool isCorrect = false;
+
+                        if (type == 'short_answer') {
+                          isCorrect = _aiShortAnswerResults[index] ?? false;
+                        } else {
+                          String userAnswer = (_selectedAnswers[index] ?? "").trim().toLowerCase().replaceAll(' | ', '|').replaceAll(' |', '|').replaceAll('| ', '|');
+                          String correctAnswer = (q['answer'] ?? "").toString().trim().toLowerCase().replaceAll(' | ', '|').replaceAll(' |', '|').replaceAll('| ', '|');
+                          isCorrect = userAnswer == correctAnswer;
+                        }
+
+                        String displayAnswer = (q['answer'] ?? "").toString().replaceAll('|', ', ');
+
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              isCorrect 
+                                ? (type == 'short_answer' ? "✅ Tuyệt vời! Giám khảo AI chấm bạn ĐÚNG Ý." : "✅ Tuyệt vời! Bạn đã điền chính xác.")
+                                : "❌ Đáp án đúng là: $displayAnswer",
+                              style: TextStyle(
+                                color: isCorrect ? Colors.green : Colors.red,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15
+                              ),
+                            ),
+                            if (type == 'short_answer' || type == 'fill_in_blank')
+                              Text(
+                                "Câu trả lời của bạn: ${(_selectedAnswers[index] ?? 'Bỏ trống').replaceAll('|', ', ')}",
+                                style: const TextStyle(color: Colors.grey, fontStyle: FontStyle.italic),
+                              ),
+                          ],
+                        );
+                      }
                     ),
                   ),
                   
-                  // Khung Giải thích màu vàng hiển thị lộng lẫy
                   if (q['explanation'] != null && q['explanation'].toString().isNotEmpty)
                     Container(
                       margin: const EdgeInsets.only(top: 15),

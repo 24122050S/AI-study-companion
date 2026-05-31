@@ -4,6 +4,8 @@ import jwt
 from datetime import datetime, timedelta
 from models import AuthRequest
 from core import supabase
+# Cập nhật dòng import này ở đầu file
+from models import AuthRequest, RegisterRequest, ResetPasswordRequest
 
 router = APIRouter()
 
@@ -25,12 +27,38 @@ def create_access_token(data: dict):
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 @router.post("/api/register")
-async def register(request: AuthRequest):
-    res = supabase.table("users").select("*").eq("username", request.username).execute()
-    if res.data: raise HTTPException(status_code=400, detail="Tên đăng nhập đã tồn tại!")
-    hashed_pw = hash_password(request.password)
-    supabase.table("users").insert({"username": request.username, "password": hashed_pw}).execute()
-    return {"status": "success", "message": "Đăng ký thành công!"}
+async def register_user(request: RegisterRequest):
+    try:
+        exist_user = supabase.table("users").select("*").eq("username", request.username).execute()
+        if exist_user.data:
+            return {"detail": "Tên đăng nhập đã tồn tại!"}, 400
+            
+        supabase.table("users").insert({
+            "username": request.username,
+            "password": request.password,  
+            "security_code": request.security_code 
+        }).execute()
+        
+        return {"status": "success", "message": "Tạo tài khoản thành công!"}
+    except Exception as e:
+        return {"detail": str(e)}, 500
+
+# 🚀 API ĐẶT LẠI MẬT KHẨU (Dùng ResetPasswordRequest)
+@router.post("/api/reset_password")
+async def reset_password(request: ResetPasswordRequest):
+    try:
+        user_match = supabase.table("users").select("*").eq("username", request.username).eq("security_code", request.security_code).execute()
+            
+        if not user_match.data:
+            return {"status": "error", "message": "Tên đăng nhập hoặc Mã bảo mật không trùng khớp!"}
+            
+        supabase.table("users").update({
+            "password": request.new_password
+        }).eq("username", request.username).execute()
+        
+        return {"status": "success", "message": "Đặt lại mật khẩu mới thành công!"}
+    except Exception as e:
+        return {"status": "error", "message": f"Máy chủ gặp sự cố: {str(e)}"}
 
 @router.post("/api/login")
 async def login(request: AuthRequest):

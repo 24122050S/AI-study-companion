@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:google_fonts/google_fonts.dart';
-
+import 'package:google_fonts/google_fonts.dart';
 import 'auth_screen.dart';
 import 'api_constants.dart';
 import 'workspace_screen.dart'; // 👈 BẮT BUỘC IMPORT MÀN HÌNH SẢNH CHỜ
@@ -30,7 +30,10 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFC8E6C9)),
-        textTheme: GoogleFonts.nunitoTextTheme(),
+        // 🚀 SỬA DÒNG DƯỚI ĐÂY THÀNH ROBOTO HOẶC BE VIETNAM PRO
+        textTheme: GoogleFonts.robotoTextTheme(
+          Theme.of(context).textTheme,
+        ), 
         useMaterial3: true,
       ),
       home: startScreen, 

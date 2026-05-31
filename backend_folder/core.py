@@ -48,7 +48,7 @@ def call_groq(prompt: str, is_chat_mode: bool = False, temp: float = 0.2):
                     messages=[{"role": "system", "content": sys_msg}, {"role": "user", "content": prompt}],
                     model=model,
                     temperature=temp, 
-                    max_tokens=4000, 
+                    max_tokens=6500, 
                 )
                 return chat_completion.choices[0].message.content
             except Exception as e:

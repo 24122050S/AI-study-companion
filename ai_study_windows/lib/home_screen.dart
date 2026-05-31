@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:audioplayers/audioplayers.dart'; 
+import 'dart:async';
 
 import 'quiz_screen.dart';
 import 'note_screen.dart';
@@ -17,6 +18,7 @@ import 'api_constants.dart';
 import 'quiz_history_screen.dart'; 
 import 'flashcard_history_screen.dart';
 import 'study_history_screen.dart'; 
+import 'concept_map_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final String notebookId;    
@@ -32,7 +34,17 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+String? _focusTopic; 
+Timer? _roadmapTimer;
+int _roadmapRemainingSeconds = 0;
+
+String _formatTime(int seconds) {
+  int m = seconds ~/ 60;
+  int s = seconds % 60;
+  return "${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}";
+}
+
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final TextEditingController _chatController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final List<Map<String, String>> _messages = [];
@@ -41,59 +53,113 @@ class _HomeScreenState extends State<HomeScreen> {
   List<dynamic> _uploadedFiles = [];
   bool _isFilesLoading = false;
 
-  // --- THÔNG SỐ GAMIFICATION ---
   int _streak = 0;
   List<dynamic> _notifications = [];
   int _unreadCount = 0;
 
-  // --- TRÌNH PHÁT NHẠC (ĐỌC GIỌNG AI EDGE TTS) ---
   final AudioPlayer _audioPlayer = AudioPlayer();
   String? _currentlyPlayingText;
 
   String _username = "An Nguyen"; 
   
-
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadUser();
 
     _audioPlayer.onPlayerComplete.listen((event) {
-      if (mounted) {
-        setState(() {
-          _currentlyPlayingText = null;
-        });
-      }
+      if (mounted) setState(() => _currentlyPlayingText = null);
     });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _audioPlayer.dispose(); 
     _chatController.dispose();
     _scrollController.dispose();
+    _roadmapTimer?.cancel(); 
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive || state == AppLifecycleState.hidden) {
+      _roadmapTimer?.cancel();
+    } else if (state == AppLifecycleState.resumed) {
+      if (_focusTopic != null && _roadmapRemainingSeconds > 0) {
+        setState(() {}); 
+        _startRoadmapTimerLoop();
+      }
+    }
+  }
+
+  Future<void> _restoreRoadmapState() async {
+    final prefs = await SharedPreferences.getInstance();
+    String topicKey = 'roadmap_focus_topic_${widget.notebookId}';
+    String remainingKey = 'roadmap_remaining_seconds_${widget.notebookId}'; 
+
+    String? savedTopic = prefs.getString(topicKey);
+    int? savedRemaining = prefs.getInt(remainingKey);
+
+    if (savedTopic != null && savedRemaining != null && savedRemaining > 0) {
+      setState(() {
+        _focusTopic = savedTopic;
+        _roadmapRemainingSeconds = savedRemaining; 
+      });
+      _startRoadmapTimerLoop(); 
+    } else {
+      _clearRoadmapStorage();
+    }
+  }
+
+  void _startRoadmapTimerLoop() {
+    _roadmapTimer?.cancel(); 
+    _roadmapTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+
+      setState(() {
+        if (_roadmapRemainingSeconds > 0) {
+          _roadmapRemainingSeconds--;
+          SharedPreferences.getInstance().then((prefs) {
+            prefs.setInt('roadmap_remaining_seconds_${widget.notebookId}', _roadmapRemainingSeconds);
+          });
+        } else {
+          timer.cancel();
+          _focusTopic = null;
+          _roadmapRemainingSeconds = 0;
+          _clearRoadmapStorage();
+
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text("🎉 Hết thời gian Giai đoạn này! Đã mở khóa full tài liệu."),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 5),
+          ));
+        }
+      });
+    });
+  }
+
+  Future<void> _clearRoadmapStorage() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('roadmap_focus_topic_${widget.notebookId}');
+    await prefs.remove('roadmap_remaining_seconds_${widget.notebookId}');
+  }
+
   Future<void> _toggleAudio(String text) async {
-    // 1. NẾU BẤM LẠI VÀO ĐÚNG CÂU ĐANG ĐỌC -> DỪNG LẠI
     if (_currentlyPlayingText == text && _audioPlayer.state == PlayerState.playing) {
       await _audioPlayer.stop();
-      setState(() {
-        _currentlyPlayingText = null;
-      });
+      setState(() { _currentlyPlayingText = null; });
       return; 
     }
-
-    // 2. NẾU ĐANG ĐỌC CÂU KHÁC MÀ BẤM CÂU MỚI -> TẮT CÂU CŨ TRƯỚC
     if (_audioPlayer.state == PlayerState.playing) {
       await _audioPlayer.stop();
     }
-
-    // 3. PHÁT ÂM THANH CÂU MỚI
-    setState(() {
-      _currentlyPlayingText = text;
-    });
+    setState(() { _currentlyPlayingText = text; });
 
     String cleanText = text.replaceAll(RegExp(r'[*#_`]'), ''); 
     String ttsUrl = "${ApiConstants.baseUrl}/api/tts?text=${Uri.encodeComponent(cleanText)}";
@@ -127,6 +193,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _fetchFiles(); 
     _fetchDashboardStats(); 
     _fetchChatHistory();  
+    _restoreRoadmapState(); 
   }
 
   Future<void> _fetchChatHistory() async {
@@ -147,9 +214,7 @@ class _HomeScreenState extends State<HomeScreen> {
           }
         });
       }
-    } catch (e) {
-      print("Lỗi tải lịch sử chat: $e");
-    }
+    } catch (e) { print("Lỗi tải lịch sử chat: $e"); }
     setState(() => _isChatLoading = false);
   }
 
@@ -158,20 +223,30 @@ class _HomeScreenState extends State<HomeScreen> {
       final response = await http.get(Uri.parse("${ApiConstants.baseUrl}/api/dashboard/$_username"));
       if (response.statusCode == 200) {
         final data = jsonDecode(utf8.decode(response.bodyBytes));
-        setState(() {
-          _streak = data['streak'] ?? 0;
-          _notifications = data['notifications'] ?? [];
-          _unreadCount = _notifications.length; 
-        });
+        if (mounted) setState(() => _streak = data['streak'] ?? 0);
       }
-    } catch (e) {
-      print("Lỗi tải thông báo: $e");
-    }
+    } catch (e) { print("Lỗi tải streak: $e"); }
+
+    try {
+      final notifResponse = await http.get(Uri.parse("${ApiConstants.baseUrl}/api/notifications/$_username/${widget.notebookId}"));
+      if (notifResponse.statusCode == 200) {
+        final notifData = jsonDecode(utf8.decode(notifResponse.bodyBytes));
+        if (mounted) {
+          setState(() {
+            _notifications = notifData['notifications'] ?? [];
+            _unreadCount = notifData['unread_count'] ?? 0;
+          });
+        }
+      }
+    } catch (e) { print("Lỗi tải thông báo: $e"); }
   }
 
   void _openNotifications() {
     setState(() => _unreadCount = 0); 
     
+    http.put(Uri.parse("${ApiConstants.baseUrl}/api/notifications/read_all/$_username/${widget.notebookId}"))
+        .catchError((e) => print("Lỗi đánh dấu đọc: $e"));
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -199,21 +274,58 @@ class _HomeScreenState extends State<HomeScreen> {
                     else if (n['type'] == 'warning') { icon = Icons.flag; color = Colors.orange; }
                     else { icon = Icons.info; color = Colors.blue; }
 
+                    bool isRead = n['is_read'] ?? true;
+
                     return Card(
-                      elevation: 1,
+                      elevation: isRead ? 0 : 2,
+                      color: isRead ? Colors.white : Colors.blue.shade50,
                       margin: const EdgeInsets.only(bottom: 10),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        side: BorderSide(color: isRead ? Colors.grey.shade200 : Colors.blue.shade200)
+                      ),
                       child: ListTile(
+                        onTap: () async {
+                          Navigator.pop(context);
+                          String msg = n['message'].toString();
+                          if (msg.contains("Flashcard") || msg.contains("thẻ")) {
+                            _roadmapTimer?.cancel(); 
+                            await Navigator.push(context, MaterialPageRoute(builder: (context) => FlashcardScreen(username: _username, notebookId: widget.notebookId, isReviewMode: true)));
+                            
+                            if (_focusTopic != null) {
+                              setState(() {}); 
+                              _startRoadmapTimerLoop(); 
+                            }
+                            _fetchDashboardStats();
+                          }
+                        },
                         leading: CircleAvatar(backgroundColor: color.withOpacity(0.1), child: Icon(icon, color: color)),
-                        title: Text(n['message'], style: const TextStyle(fontSize: 14)),
-                        subtitle: Text(n['time'], style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                        title: Text(
+                          n['title'] ?? "Thông báo", 
+                          style: TextStyle(fontWeight: isRead ? FontWeight.normal : FontWeight.bold, fontSize: 15)
+                        ),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 4),
+                            Text(n['message'], style: TextStyle(fontSize: 13, color: isRead ? Colors.grey.shade700 : Colors.black87)),
+                            const SizedBox(height: 4),
+                            Text(n['time'], style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                          ],
+                        ),
                       ),
                     );
                   },
                 ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Đóng", style: TextStyle(fontSize: 16))),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _fetchDashboardStats(); 
+            }, 
+            child: const Text("Đóng", style: TextStyle(fontSize: 16))
+          ),
         ],
       ),
     );
@@ -262,22 +374,15 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       
       final response = await request.send();
-      final respStr = await response.stream.bytesToString(); // Đọc nội dung lỗi từ Python
+      final respStr = await response.stream.bytesToString();
 
       if (response.statusCode == 200) {
         _fetchFiles(); 
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✅ AI đã học xong tài liệu!'), backgroundColor: Colors.green));
       } else {
-        // 🛡️ ĐÃ SỬA: Nếu máy chủ báo lỗi (Ví dụ 500), hiện bảng màu đỏ báo cáo ngay
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Lỗi máy chủ: $respStr'), 
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 5), // Hiện 5 giây để bạn kịp đọc
-          )
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Lỗi máy chủ: $respStr'), backgroundColor: Colors.red, duration: const Duration(seconds: 5)));
       }
     } catch (e) { print(e); }
   }
@@ -292,7 +397,6 @@ class _HomeScreenState extends State<HomeScreen> {
       _isChatLoading = true;
       _chatController.clear();
     });
-    
     _scrollToBottom();
 
     try {
@@ -301,8 +405,9 @@ class _HomeScreenState extends State<HomeScreen> {
       request.body = jsonEncode({
         "user_id": _username, 
         "notebook_id": widget.notebookId, 
-        "message": text
-        });
+        "message": text,
+        "focus_topic": _focusTopic 
+      });
 
       var response = await http.Client().send(request);
 
@@ -348,36 +453,26 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   String _cleanAndFormatTheory(String rawText) {
-    // 1. Tàng hình chữ "Dữ liệu JSON"
     String result = rawText.replaceAll("Dữ liệu JSON", "");
+    result = result.replaceAll(RegExp(r'Định dạng lại bằng Markdown', caseSensitive: false), ""); 
+    result = result.replaceAll(RegExp(r'VĂN BẢN THÔ', caseSensitive: false), ""); 
 
-    // 2. Tìm khối ngoặc nhọn { ... } và hô biến nó thành Markdown đẹp mắt
     final RegExp jsonRegExp = RegExp(r'\{[\s\S]*?\}');
-    
     result = result.replaceAllMapped(jsonRegExp, (match) {
       String jsonString = match.group(0) ?? "";
       try {
         Map<String, dynamic> jsonData = jsonDecode(jsonString);
         String beautifulText = "\n";
-        
         jsonData.forEach((key, value) {
-          // Làm sạch cái Key (VD: "nội_dung_cách_mạng" -> "Nội dung cách mạng")
           String prettyKey = key.replaceAll('_', ' ');
           if (prettyKey.isNotEmpty) {
             prettyKey = prettyKey[0].toUpperCase() + prettyKey.substring(1);
           }
-          
-          // Gắn Icon và in đậm tiêu đề
           beautifulText += "🔹 **$prettyKey**: $value\n\n";
         });
-        
         return beautifulText;
-      } catch (e) {
-        // Nếu lỡ JSON bị rách/lỗi thì bọc nó vào khung xám cho gọn
-        return "```text\n$jsonString\n```";
-      }
+      } catch (e) { return "```text\n$jsonString\n```"; }
     });
-
     return result.trim();
   }
 
@@ -393,14 +488,13 @@ class _HomeScreenState extends State<HomeScreen> {
       final response = await http.get(
         Uri.parse("${ApiConstants.baseUrl}/api/reference?user_id=$_username&filename=$filename&page=$page&notebook_id=${widget.notebookId}"),
       );
-      
       if (!mounted) return;
       Navigator.pop(context); 
 
       String theoryContent = "Lỗi không tải được dữ liệu.";
       if (response.statusCode == 200) {
         final data = jsonDecode(utf8.decode(response.bodyBytes));
-        theoryContent = _cleanAndFormatTheory(data['data']); // 👈 Kích hoạt bộ lọc
+        theoryContent = _cleanAndFormatTheory(data['data']); 
       }
 
       showDialog(
@@ -412,13 +506,7 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               const Icon(Icons.menu_book, color: Colors.indigo),
               const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  "$filename - Trang $page", 
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.indigo),
-                  overflow: TextOverflow.ellipsis,
-                )
-              ),
+              Expanded(child: Text("$filename - Trang $page", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.indigo), overflow: TextOverflow.ellipsis)),
             ],
           ),
           content: SizedBox(
@@ -426,12 +514,7 @@ class _HomeScreenState extends State<HomeScreen> {
             height: 400,
             child: Container(
               padding: const EdgeInsets.all(15),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.grey.shade300),
-                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 5)]
-              ),
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.grey.shade300), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 5)]),
               child: SingleChildScrollView(
                 child: MarkdownBody(
                   data: theoryContent,
@@ -490,10 +573,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return Container(
       height: 70,
       padding: const EdgeInsets.symmetric(horizontal: 32),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)],
-      ),
+      decoration: const BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)]),
       child: Row(
         children: [
           const Icon(Icons.auto_stories, color: Colors.indigo, size: 30),
@@ -502,15 +582,17 @@ class _HomeScreenState extends State<HomeScreen> {
           const Spacer(),
           
           _buildBadge(Icons.local_fire_department, "$_streak ngày", _streak > 0 ? Colors.orange : Colors.grey),
-          const SizedBox(width: 20),
+          const SizedBox(width: 15),
+
+          if (_focusTopic != null && _roadmapRemainingSeconds > 0)
+            _buildBadge(Icons.timer, _formatTime(_roadmapRemainingSeconds), Colors.redAccent),
+          
+          const SizedBox(width: 15),
           
           Stack(
             clipBehavior: Clip.none,
             children: [
-              IconButton(
-                icon: const Icon(Icons.notifications_none_rounded, color: Colors.grey, size: 28),
-                onPressed: _openNotifications, 
-              ),
+              IconButton(icon: const Icon(Icons.notifications_none_rounded, color: Colors.grey, size: 28), onPressed: _openNotifications),
               if (_unreadCount > 0)
                 Positioned(
                   right: 8,
@@ -523,7 +605,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 )
             ],
           ),
-          
           const SizedBox(width: 20),
 
           PopupMenuButton<String>(
@@ -534,24 +615,15 @@ class _HomeScreenState extends State<HomeScreen> {
               if (value == 'logout') {
                 final prefs = await SharedPreferences.getInstance();
                 await prefs.remove('username');
-                
                 if (!mounted) return;
-                Navigator.pushAndRemoveUntil(
-                  context,
-                  MaterialPageRoute(builder: (context) => const AuthScreen()),
-                  (route) => false,
-                );
+                Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (context) => const AuthScreen()), (route) => false);
               }
             },
             child: Row(
               children: [
                 Text(_username, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                 const SizedBox(width: 10),
-                const CircleAvatar(
-                  radius: 18, 
-                  backgroundColor: Colors.blueAccent, 
-                  child: Icon(Icons.person, color: Colors.white, size: 20)
-                ),
+                const CircleAvatar(radius: 18, backgroundColor: Colors.blueAccent, child: Icon(Icons.person, color: Colors.white, size: 20)),
                 const Icon(Icons.keyboard_arrow_down, color: Colors.grey),
               ],
             ),
@@ -572,10 +644,10 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+
   String _formatMarkdownLink(String text) {
     return text.replaceAllMapped(RegExp(r'\(http://ref/([^)]+)\)'), (match) {
       String rawPath = match.group(1) ?? '';
-      // Mã hóa link (dấu cách thành %20, v.v...) để Markdown không bị gãy
       return '(http://ref/${Uri.encodeComponent(rawPath)})';
     });
   }
@@ -589,17 +661,11 @@ class _HomeScreenState extends State<HomeScreen> {
             onPressed: _uploadPDF,
             icon: const Icon(Icons.upload_file),
             label: const Text("Tải lên PDF", style: TextStyle(fontWeight: FontWeight.bold)),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF5DBB93),
-              foregroundColor: Colors.white,
-              minimumSize: const Size(double.infinity, 50),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF5DBB93), foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 50), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
           ),
           const SizedBox(height: 20),
           const Align(alignment: Alignment.centerLeft, child: Text("PDF đã tải lên", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey))),
           const SizedBox(height: 10),
-          
           Expanded(
             child: _isFilesLoading 
               ? const Center(child: CircularProgressIndicator(color: Color(0xFF5DBB93)))
@@ -639,13 +705,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       margin: const EdgeInsets.symmetric(vertical: 5),
                       padding: const EdgeInsets.all(16),
                       constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.4),
-                      decoration: BoxDecoration(
-                        color: isAi ? Colors.white : const Color(0xFF6C63FF),
-                        borderRadius: BorderRadius.circular(15),
-                        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 2)],
-                      ),
-                      
-                      // ================== CẬP NHẬT Ở ĐÂY ==================
+                      decoration: BoxDecoration(color: isAi ? Colors.white : const Color(0xFF6C63FF), borderRadius: BorderRadius.circular(15), boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 2)]),
                       child: isAi 
                         ? Builder(
                             builder: (context) {
@@ -656,15 +716,12 @@ class _HomeScreenState extends State<HomeScreen> {
                               if (rawText.contains("|||METADATA|||")) {
                                 var parts = rawText.split("|||METADATA|||");
                                 displayText = parts[0]; 
-                                try {
-                                  sourceMap = jsonDecode(parts[1]); 
-                                } catch (e) { print("Lỗi parse source map: $e"); }
+                                try { sourceMap = jsonDecode(parts[1]); } catch (e) { print(e); }
                               }
 
                               return Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  // 👇 ĐÃ SỬA LỖI 1: Thêm lại hàm onTapLink để bắt sự kiện bấm vào marker [1]
                                   MarkdownBody(
                                     data: _formatMarkdownLink(displayText),
                                     styleSheet: MarkdownStyleSheet(
@@ -676,14 +733,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                         String cleanHref = Uri.decodeComponent(href.replaceAll('http://ref/', '').trim());
                                         final parts = cleanHref.split('|');
                                         if (parts.length >= 2) {
-                                          String filename = parts[0].trim();
-                                          int page = int.tryParse(parts[1].trim()) ?? 1;
-                                          _showReferenceTheory(filename, page);
+                                          _showReferenceTheory(parts[0].trim(), int.tryParse(parts[1].trim()) ?? 1);
                                         }
                                       }
                                     },
                                   ),
-                                  
                                   if (sourceMap.isNotEmpty) ...[
                                     const SizedBox(height: 12),
                                     const Text("📍 Nguồn tài liệu:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey)),
@@ -693,40 +747,23 @@ class _HomeScreenState extends State<HomeScreen> {
                                       runSpacing: 8,
                                       children: sourceMap.map((src) {
                                         return ActionChip(
-                                          avatar: CircleAvatar(
-                                            backgroundColor: Colors.indigo.shade100,
-                                            child: Text("${src['id']}", style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.indigo)),
-                                          ),
-                                          label: Text(
-                                            "${src['file']} (Tr. ${src['page']})",
-                                            style: const TextStyle(fontSize: 12, color: Colors.indigo, fontWeight: FontWeight.w500),
-                                          ),
+                                          avatar: CircleAvatar(backgroundColor: Colors.indigo.shade100, child: Text("${src['id']}", style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.indigo))),
+                                          label: Text("${src['file']} (Tr. ${src['page']})", style: const TextStyle(fontSize: 12, color: Colors.indigo, fontWeight: FontWeight.w500)),
                                           backgroundColor: Colors.indigo.withOpacity(0.05),
                                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                          onPressed: () {
-                                            // 👇 ĐÃ SỬA LỖI 2: Dùng tryParse thay vì parse để chống Crash khi page là dấu "?"
-                                            int pageNum = int.tryParse(src['page'].toString()) ?? 1;
-                                            _showReferenceTheory(src['file'], pageNum);
-                                          },
+                                          onPressed: () { _showReferenceTheory(src['file'], int.tryParse(src['page'].toString()) ?? 1); },
                                         );
                                       }).toList(),
                                     ),
                                   ],
-
                                   if (m['text'] != "Đang suy nghĩ...") ...[
                                     const SizedBox(height: 10),
                                     const Divider(color: Colors.black12, height: 1),
                                     Row(
                                       mainAxisAlignment: MainAxisAlignment.end,
                                       children: [
-                                        IconButton(
-                                          icon: const Icon(Icons.volume_up, size: 20, color: Colors.orange),
-                                          onPressed: () => _toggleAudio(displayText), 
-                                        ),
-                                        IconButton(
-                                          icon: const Icon(Icons.bookmark_add_outlined, size: 20, color: Colors.teal),
-                                          onPressed: () => _quickSaveNote(displayText), 
-                                        ),
+                                        IconButton(icon: const Icon(Icons.volume_up, size: 20, color: Colors.orange), onPressed: () => _toggleAudio(displayText)),
+                                        IconButton(icon: const Icon(Icons.bookmark_add_outlined, size: 20, color: Colors.teal), onPressed: () => _quickSaveNote(displayText)),
                                       ],
                                     )
                                   ]
@@ -748,20 +785,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: TextField(
                   controller: _chatController,
                   onSubmitted: (_) => _sendChatMessage(),
-                  decoration: InputDecoration(
-                    hintText: "Hỏi AI về bài học...",
-                    filled: true,
-                    fillColor: Colors.white,
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(25), borderSide: BorderSide.none),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 20),
-                  ),
+                  decoration: InputDecoration(hintText: "Hỏi AI về bài học...", filled: true, fillColor: Colors.white, border: OutlineInputBorder(borderRadius: BorderRadius.circular(25), borderSide: BorderSide.none), contentPadding: const EdgeInsets.symmetric(horizontal: 20)),
                 ),
               ),
               const SizedBox(width: 10),
-              CircleAvatar(
-                backgroundColor: const Color(0xFF6C63FF),
-                child: IconButton(icon: const Icon(Icons.send, color: Colors.white), onPressed: _sendChatMessage),
-              ),
+              CircleAvatar(backgroundColor: const Color(0xFF6C63FF), child: IconButton(icon: const Icon(Icons.send, color: Colors.white), onPressed: _sendChatMessage)),
             ],
           ),
         ],
@@ -774,42 +802,110 @@ class _HomeScreenState extends State<HomeScreen> {
       title: "Chức năng",
       child: ListView(
         children: [
-          _buildActionItem("Lộ trình học AI", Icons.map, const Color(0xFFFFF3E0), Colors.deepOrange, () {
-             Navigator.push(context, MaterialPageRoute(builder: (context) => RoadmapScreen(username: _username, notebookId: widget.notebookId)));
+          _buildActionItem("Lộ trình học AI", Icons.map, const Color(0xFFFFF3E0), Colors.deepOrange, () async {
+             _roadmapTimer?.cancel(); 
+             final selectedStage = await Navigator.push(context, MaterialPageRoute(builder: (context) => RoadmapScreen(username: _username, notebookId: widget.notebookId)));
+             
+             if (selectedStage != null) {
+               String title = selectedStage['title'];
+               String timeStr = selectedStage['estimated_time'].toString();
+               List<dynamic> tasks = selectedStage['tasks'] ?? [];
+               
+               int minutes = int.tryParse(timeStr.replaceAll(RegExp(r'[^0-9]'), '')) ?? 30;
+               
+               final prefs = await SharedPreferences.getInstance();
+               await prefs.setString('roadmap_focus_topic_${widget.notebookId}', title);
+               await prefs.setInt('roadmap_remaining_seconds_${widget.notebookId}', minutes * 60);
+
+               setState(() {
+                 _focusTopic = title; 
+                 _roadmapRemainingSeconds = minutes * 60; 
+               });
+
+               _startRoadmapTimerLoop(); 
+
+               String taskList = tasks.join(", "); 
+               _chatController.text = "Hãy làm gia sư dạy tôi chủ đề: $title. Bắt đầu bằng việc hướng dẫn tôi thực hiện các nhiệm vụ sau: $taskList";
+               _sendChatMessage();
+             } else {
+               if (_focusTopic != null) {
+                 setState(() {}); 
+                 _startRoadmapTimerLoop();
+               }
+             }
           }),
-          _buildActionItem("Tạo Quiz", Icons.settings_suggest, const Color(0xFFE3F9F1), Colors.teal, () {
+          
+          _buildActionItem("Tạo Quiz", Icons.settings_suggest, const Color(0xFFE3F9F1), Colors.teal, () { 
             _showQuizSettingsDialog(); 
           }),
+          
           _buildActionItem("Phòng thi ảo", Icons.timer, const Color(0xFFEBF3FF), Colors.blueAccent, () async {
-             await Navigator.push(context, MaterialPageRoute(
-               builder: (context) => QuizScreen(
-                 modeName: "Phòng thi ảo", 
-                 numQuestions: 20, 
-                 timeLimit: 900, 
-                 username: _username,
-                 difficulty: "Phòng thi ảo",
-                 notebookId: widget.notebookId,
-               )
-             ));
+             _roadmapTimer?.cancel(); 
+             await Navigator.push(context, MaterialPageRoute(builder: (context) => QuizScreen(
+               modeName: "Phòng thi ảo", 
+               numQuestions: 30, 
+               timeLimit: 2400, 
+               username: _username, 
+               difficulty: "Phòng thi ảo", 
+               notebookId: widget.notebookId,
+               focusTopic: null, 
+             )));
+             
+             if (_focusTopic != null) {
+               setState(() {}); 
+               _startRoadmapTimerLoop(); 
+             }
              _fetchDashboardStats(); 
           }),
-          _buildActionItem("Flashcards", Icons.style, const Color(0xFFF3EFFF), Colors.purple, () {
-             Navigator.push(context, MaterialPageRoute(builder: (context) => FlashcardScreen(username: _username, notebookId: widget.notebookId)));
-          }),
-          _buildActionItem("Sổ tay ghi nhớ", Icons.book, const Color(0xFFE8F5E9), Colors.green, () {
-             Navigator.push(context, MaterialPageRoute(
-               builder: (context) => NoteScreen(
-                 username: _username,
-                 notebookId: widget.notebookId 
-               )
-             ));
-          }),
-          _buildActionItem("Lịch sử Quiz và Flashcard", Icons.emoji_events, const Color(0xFFFFF8E1), Colors.orange, () {
-             Navigator.push(context, MaterialPageRoute(builder: (context) => StudyHistoryScreen(
-               username: _username,
+          
+          _buildActionItem("Flashcards", Icons.style, const Color(0xFFF3EFFF), Colors.purple, () async {
+             _roadmapTimer?.cancel(); 
+             await Navigator.push(context, MaterialPageRoute(builder: (context) => FlashcardScreen(
+               username: _username, 
                notebookId: widget.notebookId,
+               focusTopic: _focusTopic, 
              )));
+             
+             if (_focusTopic != null) {
+               setState(() {}); 
+               _startRoadmapTimerLoop(); 
+             }
+          }),
+          
+          _buildActionItem("Sổ tay ghi nhớ", Icons.book, const Color(0xFFE8F5E9), Colors.green, () async {
+             _roadmapTimer?.cancel(); 
+             await Navigator.push(context, MaterialPageRoute(builder: (context) => NoteScreen(username: _username, notebookId: widget.notebookId)));
+             
+             if (_focusTopic != null) {
+               setState(() {}); 
+               _startRoadmapTimerLoop(); 
+             }
+          }),
+          
+          _buildActionItem("Lịch sử Quiz và Flashcard", Icons.emoji_events, const Color(0xFFFFF8E1), Colors.orange, () async {
+             _roadmapTimer?.cancel(); 
+             await Navigator.push(context, MaterialPageRoute(builder: (context) => StudyHistoryScreen(username: _username, notebookId: widget.notebookId)));
+             
+             if (_focusTopic != null) {
+               setState(() {}); 
+               _startRoadmapTimerLoop(); 
+             }
           }),  
+          
+          _buildActionItem("Sơ đồ tư duy AI", Icons.account_tree, const Color(0xFFFCE4EC), Colors.pink, () async {
+             _roadmapTimer?.cancel(); 
+             final selectedConcept = await Navigator.push(context, MaterialPageRoute(builder: (context) => ConceptMapScreen(username: _username, notebookId: widget.notebookId)));
+             
+             if (_focusTopic != null) {
+               setState(() {}); 
+               _startRoadmapTimerLoop(); 
+             }
+
+             if (selectedConcept != null && selectedConcept is String) {
+               _chatController.text = "Hãy giải thích chi tiết và dễ hiểu cho tôi về khái niệm: $selectedConcept";
+               _sendChatMessage();
+             }
+          }),
         ],
       ),
     );
@@ -819,14 +915,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return Container(
       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10)]),
       padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 15),
-          Expanded(child: child),
-        ],
-      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)), const SizedBox(height: 15), Expanded(child: child)]),
     );
   }
 
@@ -839,18 +928,8 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           const Icon(Icons.picture_as_pdf, color: Color(0xFF6C63FF), size: 20),
           const SizedBox(width: 10),
-          Expanded(
-            child: Tooltip(
-              message: name,
-              child: Text(name, style: const TextStyle(fontSize: 13), maxLines: 1, overflow: TextOverflow.ellipsis),
-            )
-          ),
-          IconButton(
-            icon: const Icon(Icons.close, color: Colors.red, size: 18),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
-            onPressed: () => _deleteFile(id),
-          ),
+          Expanded(child: Tooltip(message: name, child: Text(name, style: const TextStyle(fontSize: 13), maxLines: 1, overflow: TextOverflow.ellipsis))),
+          IconButton(icon: const Icon(Icons.close, color: Colors.red, size: 18), padding: EdgeInsets.zero, constraints: const BoxConstraints(), onPressed: () => _deleteFile(id)),
         ],
       ),
     );
@@ -859,14 +938,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildActionItem(String label, IconData icon, Color bg, Color iconCol, VoidCallback onTap) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
-      child: ListTile(
-        onTap: onTap,
-        tileColor: bg,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        leading: Icon(icon, color: iconCol),
-        title: Text(label, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-        trailing: const Icon(Icons.chevron_right, size: 18),
-      ),
+      child: ListTile(onTap: onTap, tileColor: bg, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), leading: Icon(icon, color: iconCol), title: Text(label, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)), trailing: const Icon(Icons.chevron_right, size: 18)),
     );
   }
 
@@ -881,6 +953,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _showQuizSettingsDialog() async {
     int selectedNum = 5;
     String selectedDiff = "Trung bình";
+    String selectedType = "Trộn lẫn";
 
     await showDialog(
       context: context,
@@ -889,13 +962,7 @@ class _HomeScreenState extends State<HomeScreen> {
           builder: (context, setDialogState) {
             return AlertDialog(
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              title: const Row(
-                children: [
-                  Icon(Icons.tune, color: Colors.teal),
-                  SizedBox(width: 10),
-                  Text("Tùy chỉnh Bộ đề", style: TextStyle(fontWeight: FontWeight.bold)),
-                ],
-              ),
+              title: const Row(children: [Icon(Icons.tune, color: Colors.teal), SizedBox(width: 10), Text("Tùy chỉnh Bộ đề", style: TextStyle(fontWeight: FontWeight.bold))]),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -914,7 +981,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 15),
                   const Text("Mức độ khó:", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
                   const SizedBox(height: 5),
                   Container(
@@ -929,6 +996,21 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                   ),
+                  const SizedBox(height: 15),
+                  const Text("Loại câu hỏi:", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
+                  const SizedBox(height: 5),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(10)),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        value: selectedType,
+                        isExpanded: true,
+                        items: ["Trộn lẫn", "Trắc nghiệm", "Đúng/Sai", "Điền khuyết", "Trả lời ngắn"].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
+                        onChanged: (val) => setDialogState(() => selectedType = val!),
+                      ),
+                    ),
+                  ),
                 ],
               ),
               actions: [
@@ -936,16 +1018,23 @@ class _HomeScreenState extends State<HomeScreen> {
                 ElevatedButton(
                   onPressed: () async {
                     Navigator.pop(context); 
-                    await Navigator.push(context, MaterialPageRoute(
-                      builder: (context) => QuizScreen(
-                        modeName: "Quiz ($selectedDiff)", 
-                        numQuestions: selectedNum, 
-                        timeLimit: 0, 
-                        username: _username,
-                        difficulty: selectedDiff, 
-                        notebookId: widget.notebookId,
-                      )
-                    ));
+                    
+                    _roadmapTimer?.cancel(); 
+                    await Navigator.push(context, MaterialPageRoute(builder: (context) => QuizScreen(
+                      modeName: "Quiz ($selectedDiff)", 
+                      numQuestions: selectedNum, 
+                      timeLimit: 0, 
+                      username: _username, 
+                      difficulty: selectedDiff, 
+                      notebookId: widget.notebookId, 
+                      quizType: selectedType,
+                      focusTopic: _focusTopic, 
+                    )));
+                    
+                    if (_focusTopic != null) {
+                      setState(() {}); 
+                      _startRoadmapTimerLoop(); 
+                    }
                     _fetchDashboardStats(); 
                   },
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),

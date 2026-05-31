@@ -31,19 +31,13 @@ async def rename_notebook(notebook_id: int, request: Request):
 @router.delete("/api/notebooks/{notebook_id}")
 async def delete_notebook(notebook_id: int):
     try:
-        # 1. 🛡️ DỌN SẠCH DỮ LIỆU PHỤ THUỘC (Lịch sử chat, ghi chú, đề thi...)
         supabase.table("chat_history").delete().eq("notebook_id", notebook_id).execute()
         supabase.table("uploaded_files").delete().eq("notebook_id", notebook_id).execute()
         supabase.table("notes").delete().eq("notebook_id", notebook_id).execute()
         supabase.table("quiz_decks").delete().eq("notebook_id", notebook_id).execute()
         supabase.table("flashcard_decks").delete().eq("notebook_id", notebook_id).execute()
-                
-        # 2. 🚀 ĐÃ SỬA: Lên bảng 'documents' trên Cloud để xóa toàn bộ Não AI của dự án này
         supabase.table("documents").delete().eq("metadata->>notebook_id", str(notebook_id)).execute()
-
-        # 3. Tiến hành xóa notebook trong database Supabase
         supabase.table("notebooks").delete().eq("id", notebook_id).execute()
-        
         return {"status": "success", "message": "Đã dọn sạch và xóa dự án thành công!"}
     except Exception as e:
         return {"status": "error", "message": f"Không thể xóa dự án: {str(e)}"}
@@ -67,7 +61,6 @@ async def get_dashboard(user_id: str):
     streak = 1
     today = datetime.now().date()
     prev_date = today
-    
     for r in res.data:
         r_date = datetime.strptime(r['created_at'].split("T")[0], "%Y-%m-%d").date()
         if r_date == prev_date: continue
@@ -95,12 +88,7 @@ async def get_recommendation(user_id: str):
 
 @router.post("/api/notes")
 async def add_note(request: NoteRequest):
-    supabase.table("notes").insert({
-        "user_id": request.user_id, 
-        "notebook_id": int(request.notebook_id),  
-        "title": request.title, 
-        "content": request.content
-    }).execute()
+    supabase.table("notes").insert({"user_id": request.user_id, "notebook_id": int(request.notebook_id), "title": request.title, "content": request.content}).execute()
     return {"status": "success"}
 
 @router.get("/api/notes/{user_id}/{notebook_id}")
@@ -122,12 +110,94 @@ async def update_note(note_id: int, request: Request):
         data = await request.json()
         title = data.get("title", "Ghi chú")
         content = data.get("content", "")
-        
-        supabase.table("notes").update({
-            "title": title, 
-            "content": content
-        }).eq("id", note_id).execute()
-        
+        supabase.table("notes").update({"title": title, "content": content}).eq("id", note_id).execute()
         return {"status": "success", "message": "Đã cập nhật ghi chú"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# ==================== KHU VỰC THÔNG BÁO (INBOX PATTERN & TIME-BOMB) ====================
+@router.get("/api/notifications/{user_id}/{notebook_id}")
+async def get_notifications(user_id: str, notebook_id: int):
+    try:
+        notifications = []
+        unread_count = 0
+        now = datetime.now()
+        
+        flashcard_res = supabase.table("flashcard_decks").select("cards").eq("notebook_id", notebook_id).eq("user_id", user_id).execute()
+        total_due = 0
+        if flashcard_res.data:
+            for deck in flashcard_res.data:
+                for card in deck.get("cards", []):
+                    due_date_str = card.get("due_date")
+                    if due_date_str:
+                        try:
+                            due_date = datetime.fromisoformat(due_date_str.replace('Z', '+00:00')).replace(tzinfo=None)
+                            if due_date <= now: total_due += 1
+                        except: pass
+                    else: total_due += 1
+                    
+        if total_due > 0:
+            notifications.append({
+                "id": 0, 
+                "type": "warning", 
+                "title": "Nhiệm vụ Flashcard",
+                "message": f"Có {total_due} thẻ Flashcard đang đến hạn. Hãy ôn tập ngay để duy trì trí nhớ nhé!", 
+                "time": "Vừa xong",
+                "is_read": False
+            })
+            unread_count += 1
+
+        now_str = now.isoformat()
+        res = supabase.table("notifications")\
+            .select("*")\
+            .eq("user_id", user_id)\
+            .eq("notebook_id", notebook_id)\
+            .lte("created_at", now_str)\
+            .order("created_at", desc=True)\
+            .limit(20)\
+            .execute()
+        
+        if res.data:
+            for n in res.data:
+                notifications.append({
+                    "id": n['id'],
+                    "type": n['type'],
+                    "title": n['title'],
+                    "message": n['message'],
+                    "time": n['created_at'].split("T")[0] + " " + n['created_at'].split("T")[1][:5],
+                    "is_read": n['is_read']
+                })
+                if not n['is_read']: unread_count += 1
+                    
+        return {"status": "success", "unread_count": unread_count, "notifications": notifications}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.put("/api/notifications/read_all/{user_id}/{notebook_id}")
+async def mark_all_notifications_read(user_id: str, notebook_id: int):
+    try:
+        now_str = datetime.now().isoformat()
+        supabase.table("notifications").update({"is_read": True}).eq("user_id", user_id).eq("notebook_id", notebook_id).eq("is_read", False).lte("created_at", now_str).execute()
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.post("/api/notifications")
+async def create_notification(request: Request):
+    try:
+        data = await request.json()
+        delay_hours = float(data.get("delay_hours", 0))
+        trigger_time = datetime.now() + timedelta(hours=delay_hours)
+        
+        supabase.table("notifications").insert({
+            "user_id": data.get("user_id"),
+            "notebook_id": data.get("notebook_id"),
+            "title": data.get("title", "Thông báo mới"),
+            "message": data.get("message"),
+            "type": data.get("type", "info"),
+            "is_read": False,
+            "created_at": trigger_time.isoformat() 
+        }).execute()
+        return {"status": "success"}
     except Exception as e:
         return {"status": "error", "message": str(e)}

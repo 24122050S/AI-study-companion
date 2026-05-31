@@ -3,10 +3,12 @@ import json
 import random
 from models import WeaknessRequest
 # 🚀 ĐÃ XÓA VECTOR_DB_ROOT, FAISS và embeddings vì không cần dùng local nữa
-from core import get_active_context, call_groq, extract_json_array, supabase
+from core import get_active_context, call_groq, extract_json_array, supabase, GROQ_API_KEYS
 from datetime import datetime
-
+from groq import Groq
+from models import ScoreRequest
 router = APIRouter()
+
 
 # 🚀 NÂNG CẤP: HÀM BỐC TÀI LIỆU NGẪU NHIÊN TRỰC TIẾP TỪ SUPABASE CLOUD
 def get_random_context(user_id: str, notebook_id: str, k_needed: int = 20):
@@ -40,6 +42,8 @@ async def generate_quiz(request: Request):
         notebook_id = data.get("notebook_id", "")
         num_questions = int(data.get("num_questions", 5))
         difficulty = data.get("difficulty", "Trung bình")
+        quiz_type = data.get("quiz_type", "Trộn lẫn")
+        focus_topic = data.get("focus_topic") # 🚀 1. NHẬN CHỦ ĐỀ BÀI HỌC TỪ APP
         
         # 1. TẠO SỔ ĐEN
         forbidden_concepts = []
@@ -51,74 +55,114 @@ async def generate_quiz(request: Request):
                         if "concept" in q:
                             forbidden_concepts.append(q["concept"])
             forbidden_concepts = list(set(forbidden_concepts))
-        except:
-            pass
+        except: pass
             
         forbidden_str = ", ".join(forbidden_concepts) if forbidden_concepts else "Chưa có"
 
-        # 2. BỐC TÀI LIỆU
+        # 2. BỐC TÀI LIỆU (TÁCH BIỆT LOGIC THEO CHẾ ĐỘ)
         k_size = min(12, num_questions * 2) 
-        context = get_random_context(user_id, str(notebook_id), k_needed=k_size)
+        
+        # 🚀 LOGIC CÁ NHÂN HÓA:
+        if focus_topic and difficulty != "Phòng thi ảo":
+            # Đang học theo Roadmap -> Tìm tài liệu CHỈ thuộc bài này
+            search_query = f"Nội dung trọng tâm thuộc chủ đề: {focus_topic}"
+            context = get_active_context(search_query, user_id, str(notebook_id), k_needed=k_size)
+            focus_instruction = f"BÁM SÁT VÀO KIẾN THỨC CỦA CHỦ ĐỀ NÀY: {focus_topic}"
+        else:
+            # Thi ảo hoặc học tự do -> Bốc ngẫu nhiên FULL SÁCH
+            context = get_random_context(user_id, str(notebook_id), k_needed=k_size)
+            focus_areas = [
+                "ĐÀO SÂU vào các khái niệm phụ",
+                "TÌM KIẾM các con số, mốc thời gian, số liệu",
+                "TẬP TRUNG vào nguyên lý hoạt động, cơ chế",
+                "KHAI THÁC các ví dụ thực tế",
+                "PHÂN TÍCH sự khác biệt, ưu/nhược điểm"
+            ]
+            focus_instruction = random.choice(focus_areas)
         
         if not context:
-            return {"data": [{"question": "Bạn chưa tải file PDF!", "options": ["Đã hiểu"], "answer": "Đã hiểu", "concept": "Lỗi", "source_page": "0", "explanation": "Vui lòng tải tài liệu."}]}
+            return {"data": [{"type": "multiple_choice", "question": "Bạn chưa tải file PDF!", "options": ["Đã hiểu"], "answer": "Đã hiểu", "concept": "Lỗi", "source_page": "0", "explanation": "Vui lòng tải tài liệu."}]}
             
-        # 3. TẠO LĂNG KÍNH NGẪU NHIÊN 
-        focus_areas = [
-            "ĐÀO SÂU vào các khái niệm phụ, định nghĩa nhỏ lẻ ít người để ý",
-            "TÌM KIẾM các con số, mốc thời gian, số liệu thống kê hoặc tỷ lệ phần trăm",
-            "TẬP TRUNG vào nguyên lý hoạt động, cơ chế, hoặc các bước trong một quy trình",
-            "KHAI THÁC các ví dụ thực tế, tình huống ứng dụng, hoặc ngoại lệ",
-            "PHÂN TÍCH sự khác biệt, ưu điểm, nhược điểm, hoặc so sánh",
-            "BỐC NGẪU NHIÊN các chi tiết râu ria nằm ở cuối mỗi đoạn văn"
-        ]
-        focus_instruction = random.choice(focus_areas)
         random_seed = random.randint(10000, 99999) 
 
         difficulty_instruction = ""
-        if difficulty == "Dễ":
-            difficulty_instruction = "MỨC ĐỘ DỄ: Chỉ hỏi trực tiếp vào định nghĩa."
-        elif difficulty == "Trung bình":
-            difficulty_instruction = "MỨC ĐỘ TRUNG BÌNH: CẤM hỏi kiểu định nghĩa. Phải đưa ra đặc điểm, ví dụ."
-        elif difficulty == "Khó":
-            difficulty_instruction = "MỨC ĐỘ KHÓ: Bắt buộc dùng cấu trúc 'Phát biểu nào sau đây ĐÚNG/SAI?'. Đáp án bẫy cực kỳ tinh vi."
-        elif difficulty == "Phòng thi ảo":
-            difficulty_instruction = "TRỘN LẪN ĐỘ KHÓ DỄ - TRUNG BÌNH - KHÓ."
+        if difficulty == "Dễ": difficulty_instruction = "MỨC ĐỘ DỄ: Hỏi trực tiếp vào định nghĩa."
+        elif difficulty == "Trung bình": difficulty_instruction = "MỨC ĐỘ TRUNG BÌNH: Đưa ra đặc điểm, ví dụ, phân tích."
+        elif difficulty == "Khó": difficulty_instruction = "MỨC ĐỘ KHÓ: Yêu cầu suy luận, kết hợp nhiều kiến thức. Đáp án bẫy tinh vi."
+        elif difficulty == "Phòng thi ảo": difficulty_instruction = "TRỘN LẪN ĐỘ KHÓ DỄ - TRUNG BÌNH - KHÓ."
+
+        type_instruction = ""
+        if quiz_type == "Phòng thi ảo" or difficulty == "Phòng thi ảo":
+            type_instruction = '''ĐÂY LÀ BÀI THI CHUẨN MỰC. BẠN BẮT BUỘC PHẢI TẠO 30 CÂU HỎI THEO THỨ TỰ SAU:
+        - Câu 1 đến 20: "multiple_choice" (Trắc nghiệm 4 đáp án).
+        - Câu 21 đến 24: "true_false" (Đúng/Sai).
+        - Câu 25 đến 28: "fill_in_blank" (ĐOẠN VĂN KÉO THẢ NHIỀU Ô TRỐNG. BẮT BUỘC đục 3-5 lỗ trống "___". "options" chứa 6-8 từ gồm cả đúng và sai. "answer" nối bằng "|").
+        - Câu 29 đến 30: "short_answer" (Trả lời ngắn).
+        TUYỆT ĐỐI KHÔNG LÀM SAI TỔNG SỐ LƯỢNG 30 CÂU!'''
+            num_questions = 30 
+            
+        elif quiz_type == "Trắc nghiệm":
+            type_instruction = 'Bạn CHỈ ĐƯỢC TẠO DUY NHẤT loại câu hỏi "multiple_choice" (Trắc nghiệm 4 đáp án).'
+        elif quiz_type == "Đúng/Sai":
+            type_instruction = 'Bạn CHỈ ĐƯỢC TẠO DUY NHẤT loại câu hỏi "true_false" (options luôn là ["Đúng", "Sai"]).'
+        elif quiz_type == "Điền khuyết":
+            type_instruction = '''Bạn CHỈ ĐƯỢC TẠO DUY NHẤT loại câu hỏi "fill_in_blank".
+        🚨 LƯU Ý TỐI QUAN TRỌNG: 
+        - Mỗi câu hỏi PHẢI LÀ MỘT ĐOẠN VĂN, đục ÍT NHẤT 3 ĐẾN 4 lỗ trống bằng dấu "___". TUYỆT ĐỐI KHÔNG làm câu chỉ có 1 lỗ trống!
+        - Trường "options" phải chứa TẤT CẢ các đáp án đúng và thêm 3 từ nhiễu sai.
+        - Trường "answer" nối các đáp án đúng theo thứ tự bằng dấu "|".
+        👉 VÍ DỤ: {"type": "fill_in_blank", "question": "Hệ điều hành là một ___ quản lý ___ và phần mềm máy tính, cung cấp các ___ chung", "options": ["phần mềm", "tiện ích", "phần cứng", "dịch vụ", "ứng dụng", "bộ nhớ"], "answer": "phần mềm|phần cứng|dịch vụ", "concept": "Hệ điều hành", "source_page": "1", "explanation": "..."}'''
+        elif quiz_type == "Trả lời ngắn":
+            type_instruction = 'Bạn CHỈ ĐƯỢC TẠO DUY NHẤT loại câu hỏi "short_answer" (Trả lời bằng 1-3 từ khóa. Trường "options" ĐỂ MẢNG RỖNG []).'
+        else:
+            type_instruction = '''Bạn BẮT BUỘC PHẢI TRỘN LẪN 4 loại câu hỏi sau:
+        - "multiple_choice": Trắc nghiệm 4 đáp án.
+        - "true_false": Đúng hoặc Sai.
+        - "fill_in_blank": Đoạn văn điền khuyết (BẮT BUỘC đục 3-4 lỗ "___". "options" cho 6-8 từ. "answer" nối bằng "|").
+        - "short_answer": Câu hỏi ngắn gọn, yêu cầu trả lời bằng 2-3 từ khóa.'''
 
         prompt = f"""
-        Bạn là chuyên gia khảo thí. Dựa vào TÀI LIỆU sau, tạo {num_questions} câu hỏi trắc nghiệm.
+        Bạn là chuyên gia khảo thí. Dựa vào TÀI LIỆU sau, tạo {num_questions} câu hỏi.
         TÀI LIỆU: {context}
         
         CHÚ Ý ĐỘ KHÓ: {difficulty_instruction}
         
-        ⛔ MỆNH LỆNH LÀM MỚI (Mã hạt giống: {random_seed}):
-        1. GÓC NHÌN LẦN NÀY: BẠN BẮT BUỘC PHẢI {focus_instruction}. TUYỆT ĐỐI KHÔNG hỏi các tiêu đề lớn to tát.
-        2. HẠN CHẾ TRÙNG LẶP: Học sinh đã làm các chủ đề này rồi: [{forbidden_str}]. Hãy cố gắng né chúng ra!
+        ⛔ MỆNH LỆNH ĐỔI MỚI (Hạt giống: {random_seed}):
+        1. GÓC NHÌN: {focus_instruction}. 
+        2. HẠN CHẾ TRÙNG LẶP: Né các chủ đề này ra: [{forbidden_str}].
         
-        YÊU CẦU JSON BẮT BUỘC: Trả về CHỈ 1 MẢNG JSON thuần túy.
+        🚀 YÊU CẦU LOẠI CÂU HỎI:
+        {type_instruction}
+        
+        YÊU CẦU JSON BẮT BUỘC: Trả về CHỈ 1 MẢNG JSON. Không giải thích thêm.
         [
           {{
-            "question": "Nội dung?", 
-            "options": ["A", "B", "C", "D"], 
-            "answer": "A",
-            "concept": "Tên khái niệm (Ngắn gọn)",
-            "source_page": "Trang chứa thông tin",
+            "type": "multiple_choice",
+            "question": "Nội dung câu hỏi?", 
+            "options": ["A", "B", "C", "D"],
+            "answer": "A", 
+            "concept": "Tên khái niệm",
+            "source_page": "Trang",
             "explanation": "Giải thích chi tiết."
           }}
         ]
         """
         
         raw_text = call_groq(prompt, is_chat_mode=False, temp=0.85).replace("```json", "").replace("```", "").strip()
-        quiz_data = extract_json_array(json.loads(raw_text), ["question", "options", "answer", "concept", "source_page", "explanation"]) 
+        quiz_data = extract_json_array(json.loads(raw_text), ["type", "question", "options", "answer", "concept", "source_page", "explanation"]) 
         
         deck_title = f"Đề {difficulty} ({datetime.now().strftime('%H:%M %d/%m')})"
+        # 🚀 ĐỔI TÊN ĐỀ NẾU LÀ ĐỀ ÔN THEO BÀI
+        if focus_topic and difficulty != "Phòng thi ảo":
+            deck_title = f"Đề Ôn Lộ Trình ({datetime.now().strftime('%H:%M')})"
+
         res = supabase.table("quiz_decks").insert({
             "user_id": user_id, "notebook_id": int(notebook_id), "difficulty": difficulty, "title": deck_title, "questions": quiz_data 
         }).execute()
 
         return {"status": "success", "deck_id": res.data[0]['id'], "data": quiz_data}
     except Exception as e:
-        return {"data": [{"question": "Hệ thống bị gián đoạn.", "options": ["OK"], "answer": "OK", "concept": "Lỗi", "source_page": "0", "explanation": str(e)}]}
+        return {"data": [{"type": "multiple_choice", "question": "Hệ thống bị gián đoạn.", "options": ["OK"], "answer": "OK", "concept": "Lỗi", "source_page": "0", "explanation": str(e)}]}
 
 # ==================== CÁC API LỊCH SỬ QUIZ ====================
 @router.get("/api/quiz/history/{notebook_id}")
@@ -135,25 +179,77 @@ async def get_quiz_deck(deck_id: int, user_id: str):
         return {"status": "error", "message": str(e)}
 
 # ==================== KHU VỰC ĐIỂM YẾU ====================
+# ==================== KHU VỰC ĐIỂM YẾU ====================
+# ==================== KHU VỰC ĐIỂM YẾU ====================
 @router.post("/api/analyze_weakness")
-async def analyze_weakness(request: WeaknessRequest):
+async def analyze_weakness(request: Request): 
     try:
-        if not request.wrong_questions:
-            return {"status": "success", "data": {"report": "Tuyệt vời!", "quiz": []}}
-        search_query = " ".join(request.wrong_questions)
-        context = get_active_context(search_query, request.user_id, request.notebook_id, k_needed=15)
+        data = await request.json()
+        user_id = data.get("user_id")
+        notebook_id = data.get("notebook_id")
+        wrong_questions = data.get("wrong_questions", [])
+        correct_questions = data.get("correct_questions", []) 
+
+        if not wrong_questions:
+            return {"status": "success", "data": {"report": "🎉 Tuyệt vời! Bạn đã trả lời đúng tất cả các câu hỏi.", "quiz": []}}
+            
+        search_query = " ".join(wrong_questions)
+        context = get_active_context(search_query, user_id, str(notebook_id), k_needed=15)
         
         prompt = f"""
-        Học sinh sai các câu hỏi liên quan: {request.wrong_questions}
-        TÀI LIỆU CƠ SỞ: {context}
-        Trả JSON: {{"report": "Phân tích theo khái niệm...", "quiz": [{{"question": "...", "options": ["A", "B"], "answer": "A", "concept": "...", "source_page": "...", "explanation": "..."}}]}}
+        Bạn là một Gia sư AI xuất sắc. Hãy phân tích kết quả bài thi của học sinh:
+        - Học sinh ĐÃ LÀM TỐT các chủ đề này: {correct_questions}
+        - Học sinh LÀM SAI các câu hỏi này: {wrong_questions}
+        
+        TÀI LIỆU CƠ SỞ CHUYÊN MÔN: {context}
+        
+        YÊU CẦU BÁO CÁO (Trường "report" định dạng Markdown, BẮT BUỘC có 3 phần sau):
+        ### 🌟 1. Những gì bạn đã làm được
+        [Khen ngợi và chỉ ra những chủ đề học sinh đã nắm vững]
+        
+        ### ⚠️ 2. Phân tích lỗ hổng kiến thức
+        [Phân tích chi tiết tại sao học sinh lại sai những câu kia. Giải thích bản chất đúng dựa vào tài liệu]
+        
+        ### 🎯 3. Lời khuyên & Mẹo khắc phục
+        [Đưa ra chiến lược học tập hoặc mẹo ghi nhớ để không bao giờ sai lại phần này nữa]
+        
+        YÊU CẦU BÀI TẬP BỔ TRỢ (Trường "quiz"):
+        Tạo 1 đến 3 câu hỏi trắc nghiệm MỚI TINH để học sinh thực hành lại ĐÚNG phần kiến thức bị sai.
+        
+        TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON ĐÚNG CHUẨN NÀY:
+        {{
+            "report": "Nội dung báo cáo...",
+            "quiz": [
+                {{"type": "multiple_choice", "question": "...", "options": ["A", "B", "C", "D"], "answer": "A", "concept": "...", "source_page": "...", "explanation": "..."}}
+            ]
+        }}
         """
-        raw_text = call_groq(prompt).replace("```json", "").replace("```", "").strip()
-        parsed_data = json.loads(raw_text)
-        valid_quiz = extract_json_array(parsed_data.get("quiz", []), ["question", "options", "answer", "concept", "source_page", "explanation"])
-        return {"status": "success", "data": {"report": parsed_data.get("report", ""), "quiz": valid_quiz}}
+        
+        raw_text = call_groq(prompt, temp=0.5)
+        
+        # 🚀 BỌC THÉP 1: ÉP TÌM ĐÚNG VÙNG CHỨA JSON (Chống AI nói nhảm thêm chữ ở ngoài)
+        start_idx = raw_text.find('{')
+        end_idx = raw_text.rfind('}')
+        if start_idx != -1 and end_idx != -1:
+            clean_json = raw_text[start_idx:end_idx+1]
+        else:
+            clean_json = raw_text
+            
+        parsed_data = json.loads(clean_json, strict=False)
+        
+        # 🚀 BỌC THÉP 2: NẾU AI LƯỜI KHÔNG TẠO ĐƯỢC QUIZ THÌ BỎ QUA, KHÔNG SẬP HỆ THỐNG
+        valid_quiz = []
+        raw_quiz = parsed_data.get("quiz", [])
+        if raw_quiz:
+            try:
+                valid_quiz = extract_json_array(raw_quiz, ["type", "question", "options", "answer"])
+            except Exception:
+                valid_quiz = [] 
+
+        return {"status": "success", "data": {"report": parsed_data.get("report", "Không thể phân tích báo cáo."), "quiz": valid_quiz}}
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        print(f"Lỗi phân tích điểm yếu: {e}")
+        return {"status": "error", "message": f"Lỗi AI: {str(e)}"}
 
 # ==================== KHU VỰC FLASHCARDS ====================
 @router.post("/api/flashcards")
@@ -163,6 +259,7 @@ async def generate_flashcards(request: Request):
         user_id = data.get("user_id", "")
         notebook_id = data.get("notebook_id", "")
         num_cards = int(data.get("num_cards", 5))
+        focus_topic = data.get("focus_topic") # 🚀 2. NHẬN CHỦ ĐỀ TỪ APP
 
         # 1. TẠO SỔ ĐEN
         forbidden_terms = []
@@ -181,19 +278,26 @@ async def generate_flashcards(request: Request):
 
         # 2. BỐC TÀI LIỆU
         k_size = min(15, num_cards * 2)
-        context = get_random_context(user_id, str(notebook_id), k_needed=k_size)
+        
+        if focus_topic:
+            # 🚀 NẾU ĐANG HỌC LỘ TRÌNH -> CHỈ BỐC KHÁI NIỆM TRONG BÀI
+            search_query = f"Khái niệm và định nghĩa thuộc chủ đề: {focus_topic}"
+            context = get_active_context(search_query, user_id, str(notebook_id), k_needed=k_size)
+            focus_instruction = f"BÁM SÁT VÀO CHỦ ĐỀ NÀY: {focus_topic}"
+        else:
+            # 🚀 BÌNH THƯỜNG -> RANDOM CẢ SÁCH
+            context = get_random_context(user_id, str(notebook_id), k_needed=k_size)
+            focus_areas = [
+                "Tập trung vào các thuật ngữ phụ, ít nổi bật",
+                "Tìm các con số quan trọng, năm, tỷ lệ phần trăm",
+                "Tìm các tên người, tác giả, hoặc công ty được nhắc đến",
+                "Khai thác các định nghĩa ngách ở cuối các đoạn văn"
+            ]
+            focus_instruction = random.choice(focus_areas)
         
         if not context: 
             return {"data": [{"term": "Chưa tải PDF", "definition": "Vui lòng tải tài liệu"}]}
             
-        # 3. LĂNG KÍNH NGẪU NHIÊN 
-        focus_areas = [
-            "Tập trung vào các thuật ngữ phụ, ít nổi bật",
-            "Tìm các con số quan trọng, năm, tỷ lệ phần trăm",
-            "Tìm các tên người, tác giả, hoặc công ty được nhắc đến",
-            "Khai thác các định nghĩa ngách ở cuối các đoạn văn"
-        ]
-        focus_instruction = random.choice(focus_areas)
         random_seed = random.randint(10000, 99999)
 
         prompt = f"""
@@ -215,6 +319,9 @@ async def generate_flashcards(request: Request):
             card.update({"ease": 2.5, "interval": 0, "reps": 0, "lapses": 0, "due_date": current_time, "last_reviewed": None})
         
         deck_title = f"Bộ Flashcard ({datetime.now().strftime('%H:%M %d/%m')})"
+        if focus_topic:
+            deck_title = f"Flashcard Lộ Trình ({datetime.now().strftime('%H:%M')})"
+
         res = supabase.table("flashcard_decks").insert({
             "user_id": user_id, "notebook_id": int(notebook_id), "title": deck_title, "cards": flashcards
         }).execute()
@@ -246,18 +353,282 @@ async def sync_flashcard_progress(deck_id: int, request: Request):
         return {"status": "error", "message": str(e)}
 
 # ==================== KHU VỰC ROADMAP ====================
+# ==================== KHU VỰC ROADMAP (CÓ TIME-GATING) ====================
 @router.post("/api/roadmap")
 async def generate_roadmap(request: Request):
     try:
         data = await request.json()
-        search_query = "Tóm tắt nội dung chính, mục lục, các chương, chủ đề cốt lõi"
-        context = get_active_context(search_query, data.get("user_id", ""), data.get("notebook_id", ""), k_needed=15)
+        user_id = data.get("user_id", "")
+        notebook_id = int(data.get("notebook_id", 0))
         
-        if not context: return {"data": [{"day": "Lỗi", "title": "Chưa có PDF", "tasks": ["Tải tài liệu lên!"]}]}
+        # 🚀 THUẬT TOÁN 1: KIỂM TRA BỘ NHỚ CỐ ĐỊNH TRƯỚC (CHỐNG RESET)
+        res = supabase.table("roadmaps").select("*").eq("notebook_id", notebook_id).eq("user_id", user_id).execute()
+        if res.data:
+            # Nếu đã có, trả về dữ liệu cũ ngay lập tức kèm tiến độ (current_stage)
+            return {
+                "status": "success", 
+                "current_stage": res.data[0]['current_stage'],
+                "data": res.data[0]['roadmap_data']
+            }
+
+        # 🚀 NẾU CHƯA CÓ: Kích hoạt AI tạo Lộ trình (Chỉ chạy đúng 1 lần duy nhất trong đời tài liệu này)
+        search_query = "Tóm tắt nội dung chính, mục lục, các chương, chủ đề cốt lõi"
+        context = get_active_context(search_query, user_id, str(notebook_id), k_needed=15)
+        
+        prompt = f"""
+        Dựa vào TÀI LIỆU sau, tạo Lộ trình học tiêu chuẩn gồm 5 giai đoạn nối tiếp nhau.
+        TÀI LIỆU: {context}
+        
+        ⛔ LUẬT SƯ PHẠM NGHIÊM NGẶT:
+        - Sinh viên BẮT BUỘC phải làm Quiz để qua bài. Bạn hãy luôn thêm 1 nhiệm vụ "Làm bài Quiz đánh giá năng lực" vào cuối mỗi giai đoạn.
+        
+        TRẢ VỀ 1 MẢNG JSON THEO ĐÚNG MẪU NÀY:
+        [
+          {{
+            "day": 1, 
+            "title": "Tên chủ đề cơ bản", 
+            "estimated_time": "45 phút",
+            "tasks": ["Đọc lý thuyết trang X", "Hoàn thành bài Quiz đánh giá năng lực"]
+          }}
+        ]
+        """
+        
+        raw_text = call_groq(prompt, temp=0.2).replace("```json", "").replace("```", "").strip()
+        roadmap_data = extract_json_array(json.loads(raw_text), ["day", "title", "estimated_time", "tasks"]) 
+        
+        # 🚀 LƯU VĨNH VIỄN VÀO CƠ SỞ DỮ LIỆU
+        supabase.table("roadmaps").insert({
+            "user_id": user_id,
+            "notebook_id": notebook_id,
+            "roadmap_data": roadmap_data,
+            "current_stage": 1 # Bắt đầu từ ải số 1
+        }).execute()
+        
+        return {"status": "success", "current_stage": 1, "data": roadmap_data}
+    except Exception as e:
+        print(f"Lỗi hệ thống Roadmap: {e}")
+        return {"status": "error", "message": "Không thể tạo lộ trình"}
+
+
+# ==================== API CỔNG CHẶN 80% (MASTERY GATE) ====================
+@router.post("/api/roadmap/submit_gate")
+async def check_mastery_gate(request: ScoreRequest):
+    try:
+        # 1. Lấy thông tin lộ trình hiện tại
+        res = supabase.table("roadmaps").select("*").eq("notebook_id", int(request.notebook_id)).eq("user_id", request.user_id).execute()
+        if not res.data:
+            return {"status": "error", "message": "Chưa có lộ trình."}
             
-        prompt = f"Dựa vào TÀI LIỆU sau, tạo Lộ trình học 5 giai đoạn.\\nTÀI LIỆU: {context}\\nTrả về 1 MẢNG JSON.\\n[{{\"day\": \"Giai đoạn 1\", \"title\": \"...\", \"tasks\": [\"A\"]}}]"
-        raw_text = call_groq(prompt).replace("```json", "").replace("```", "").strip()
-        roadmap_data = extract_json_array(json.loads(raw_text), ["day", "title", "tasks"]) 
-        return {"data": roadmap_data}
-    except Exception:
-        return {"data": [{"day": "Lỗi hệ thống", "title": "AI từ chối định dạng", "tasks": ["Xin bấm tạo lại!"]}]}
+        current_stage = res.data[0]['current_stage']
+        roadmap_length = len(res.data[0]['roadmap_data'])
+        
+        # 2. THUẬT TOÁN ĐÁNH GIÁ 80%
+        accuracy = request.score / request.total
+        
+        if accuracy >= 0.8: # Đạt từ 80% trở lên
+            if current_stage < roadmap_length:
+                # VƯỢT ẢI: Nâng cấp current_stage lên +1 và lưu vào DB
+                new_stage = current_stage + 1
+                supabase.table("roadmaps").update({"current_stage": new_stage}).eq("id", res.data[0]['id']).execute()
+                
+                msg = f"Tuyệt vời! Bạn đạt {int(accuracy*100)}%, Giai đoạn {new_stage} đã được mở khóa."
+                return {"status": "success", "action": "unlocked", "message": msg}
+            else:
+                return {"status": "success", "action": "completed", "message": "Chúc mừng! Bạn đã tốt nghiệp toàn bộ lộ trình!"}
+        else:
+            # THẤT BẠI: Giữ nguyên tiến độ, ép học lại
+            msg = f"Điểm số của bạn là {int(accuracy*100)}%. Hệ thống yêu cầu 80% để qua bài. Bạn cần ôn tập và làm lại Quiz!"
+            return {"status": "success", "action": "blocked", "message": msg}
+            
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    
+# ==================== API TRỌNG TÀI AI CHẤM ĐIỂM TỰ LUẬN ====================
+@router.post("/api/quiz/grade_short_answers")
+async def grade_short_answers(request: Request):
+    try:
+        data = await request.json()
+        items = data.get("items", []) # Nhận danh sách các câu tự luận từ App gửi lên
+        if not items:
+            return {"status": "success", "results": []}
+
+        # Định dạng danh sách đề thi để gửi cho AI chấm bài
+        formatted_items = ""
+        for i, item in enumerate(items):
+            formatted_items += f"--- Câu {i+1} ---\nCâu hỏi: {item.get('question')}\nĐáp án chuẩn: {item.get('correct_answer')}\nCâu trả lời của sinh viên: {item.get('user_answer')}\n\n"
+
+        prompt = f"""
+        Bạn là một Giám khảo chấm thi đại học nghiêm túc và thông minh. Hãy đánh giá câu trả lời ngắn của sinh viên dựa trên đáp án chuẩn.
+        
+        ⛔ QUY TẮC CHẤM ĐIỂM TẬP TRUNG VÀO BẢN CHẤT:
+        1. Hãy chấm dựa trên Ý NGHĨA và BẢN CHẤT kiến thức. 
+        2. Nếu sinh viên trả lời ĐÚNG Ý (dù viết dài hơn, ngắn hơn, dùng từ đồng nghĩa, bổ sung từ đệm như "là", "đó chính là", hoặc có lỗi sai chính tả nhẹ không làm đổi nghĩa câu), bạn phải chấm là true.
+        3. Nếu sinh viên trả lời SAI HOÀN TOÀN bản chất, trả lời lạc đề hoặc BỎ TRỐNG không ghi chữ nào, bạn chấm là false.
+
+        DANH SÁCH CÂU HỎI CẦN CHẤM:
+        {formatted_items}
+
+        YÊU CẦU TRẢ VỀ: Trả về DUY NHẤT một mảng JSON chứa các giá trị true/false tương ứng theo đúng thứ tự câu hỏi. KHÔNG giải thích dông dài.
+        Ví dụ định dạng trả về: [true, false, true]
+        """
+
+        # Gọi mô hình nhẹ (llama3-8b) để chấm điểm siêu tốc và tiết kiệm token
+        raw_text = call_groq(prompt, is_chat_mode=False, temp=0.1).replace("```json", "").replace("```", "").strip()
+        results = json.loads(raw_text)
+        
+        return {"status": "success", "results": results}
+    except Exception as e:
+        print(f"🔥 LỖI AI AUTO-GRADER: {e}")
+        # Nếu hệ thống lỗi, mặc định cho sai để tránh crash hệ thống
+        return {"status": "error", "results": [False * len(items)]}
+    
+
+# ==================== THUẬT TOÁN SRS (SUPERMEMO-2) ====================
+
+# 🚀 API 1: TÌM CÁC THẺ FLASHCARD ĐẾN HẠN HÔM NAY
+@router.get("/api/flashcards/due/{notebook_id}/{user_id}")
+async def get_due_flashcards(notebook_id: int, user_id: str):
+    try:
+        # Lấy toàn bộ các bộ flashcard của sinh viên
+        res = supabase.table("flashcard_decks").select("id, title, cards").eq("notebook_id", notebook_id).eq("user_id", user_id).execute()
+        
+        due_cards = []
+        now = datetime.now()
+        
+        if res.data:
+            for deck in res.data:
+                cards = deck.get("cards", [])
+                for i, card in enumerate(cards):
+                    due_date_str = card.get("due_date")
+                    if due_date_str:
+                        try:
+                            # Xử lý chuỗi thời gian
+                            due_date = datetime.fromisoformat(due_date_str.replace('Z', '+00:00')).replace(tzinfo=None)
+                            
+                            # Nếu ngày hẹn ôn tập NHỎ HƠN HOẶC BẰNG ngày hôm nay -> Cho vào danh sách cần học
+                            if due_date <= now:
+                                card_info = card.copy()
+                                card_info['deck_id'] = deck['id']
+                                card_info['card_index'] = i
+                                card_info['deck_title'] = deck['title']
+                                due_cards.append(card_info)
+                        except Exception:
+                            continue
+                            
+        return {"status": "success", "data": due_cards, "total_due": len(due_cards)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# 🚀 API 2: CẬP NHẬT CHỈ SỐ NÃO BỘ SAU KHI HỌC
+@router.put("/api/flashcards/update_card")
+async def update_single_card(request: Request):
+    try:
+        data = await request.json()
+        user_id = data.get("user_id")
+        deck_id = data.get("deck_id")
+        card_index = data.get("card_index")
+        updated_meta = data.get("card_data") # Chứa {ease, interval, due_date, reps} từ Flutter gửi lên
+        
+        # Lấy mảng cards gốc
+        res = supabase.table("flashcard_decks").select("cards").eq("id", deck_id).eq("user_id", user_id).execute()
+        if not res.data: 
+            return {"status": "error", "message": "Không tìm thấy bộ thẻ"}
+            
+        cards = res.data[0]['cards']
+        
+        # Ghi đè chỉ số trí nhớ mới vào thẻ
+        if 0 <= card_index < len(cards):
+            cards[card_index].update(updated_meta)
+            # Đồng bộ lại lên Cloud
+            supabase.table("flashcard_decks").update({"cards": cards}).eq("id", deck_id).eq("user_id", user_id).execute()
+            return {"status": "success", "message": "Đã lưu trí nhớ"}
+        else:
+            return {"status": "error", "message": "Lỗi vị trí thẻ"}
+            
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    
+# 🚀 API ĐẾM SỐ LƯỢNG THẺ ĐẾN HẠN (DÙNG CHO THÔNG BÁO MÀN HÌNH CHÍNH)
+@router.get("/api/flashcards/due_count/{notebook_id}/{user_id}")
+async def get_due_flashcards_count(notebook_id: int, user_id: str):
+    try:
+        # Lấy tất cả bộ thẻ của user trong notebook này
+        res = supabase.table("flashcard_decks").select("cards").eq("notebook_id", notebook_id).eq("user_id", user_id).execute()
+        
+        total_due = 0
+        now = datetime.now()
+        
+        if res.data:
+            for deck in res.data:
+                for card in deck.get("cards", []):
+                    due_date_str = card.get("due_date")
+                    if due_date_str:
+                        try:
+                            # Phân tích chuỗi thời gian an toàn
+                            due_date = datetime.fromisoformat(due_date_str.replace('Z', '+00:00')).replace(tzinfo=None)
+                            if due_date <= now:
+                                total_due += 1
+                        except Exception:
+                            pass
+                    else:
+                        total_due += 1 # Nếu thẻ bị lỗi mất ngày, mặc định là cần học
+                        
+        return {"status": "success", "total_due": total_due}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    
+@router.post("/api/concept_map")
+async def generate_concept_map(request: Request):
+    try:
+        data = await request.json()
+        user_id = data.get("user_id")
+        notebook_id = data.get("notebook_id")
+        
+        # Lấy tài liệu 
+        search_query = "Tóm tắt các định nghĩa, khái niệm cốt lõi, thành phần chính và mối liên hệ giữa chúng."
+        context_text = get_active_context(search_query, user_id, notebook_id, k_needed=15)
+        
+        if not context_text:
+            return {"status": "error", "message": "Chưa có tài liệu để phân tích."}
+            
+        prompt = f"""
+        Bạn là chuyên gia thiết kế Sơ đồ tư duy (Mind Map).
+        Dựa vào TÀI LIỆU sau, hãy trích xuất các khái niệm chính và phân cấp chúng.
+        TÀI LIỆU: {context_text}
+        
+        ⛔ YÊU CẦU NGHIÊM NGẶT:
+        1. Tạo 1 "Khái niệm trung tâm" và chia ra các "Khái niệm nhánh". Tối đa 15 nodes.
+        2. CHỈ trả về JSON thuần túy, tuyệt đối KHÔNG có dấu markdown (```json), KHÔNG giải thích.
+        
+        MẪU JSON CHUẨN:
+        {{
+            "nodes": [
+                {{"id": "1", "label": "Chủ nghĩa tư bản"}},
+                {{"id": "2", "label": "Tổ chức độc quyền"}},
+                {{"id": "3", "label": "Xuất khẩu tư bản"}}
+            ],
+            "edges": [
+                {{"from": "1", "to": "2"}},
+                {{"from": "1", "to": "3"}}
+            ]
+        }}
+        """
+        
+        # Gọi thẳng Groq API
+        client = Groq(api_key=GROQ_API_KEYS[0])
+        chat_completion = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile",
+            temperature=0.1
+        )
+        
+        raw_response = chat_completion.choices[0].message.content
+        
+        # Làm sạch chuỗi đề phòng AI lỡ sinh ra markdown
+        clean_json = raw_response.replace("```json", "").replace("```", "").strip()
+        map_data = json.loads(clean_json)
+        
+        return {"status": "success", "data": map_data}
+    except Exception as e:
+        print(f"Lỗi Concept Map: {e}")
+        return {"status": "error", "message": str(e)}
