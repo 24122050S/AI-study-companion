@@ -38,21 +38,34 @@ async def chat_with_ai(request: ChatRequest):
         # 🚀 BƯỚC 4.1: ÉP KHU VỰC TÌM KIẾM TÀI LIỆU
         # ==========================================
         search_query = request.message
-        # Kiểm tra xem có đang bật chế độ học theo Roadmap không (focus_topic)
+        
+        # Cảm biến ý định người dùng
+        user_msg_lower = request.message.lower()
+        is_summarizing = any(kw in user_msg_lower for kw in ["tóm tắt", "tổng hợp", "tổng quan", "khái quát", "toàn bộ"])
+        
+        # Mở rộng vùng quét nếu yêu cầu tóm tắt (từ 12 lên 40 chunks để đọc siêu sâu)
+        chunk_size = 40 if is_summarizing else 12
+        
+        # Kiểm tra xem có đang bật chế độ học theo Roadmap không
         if getattr(request, "focus_topic", None):
             search_query = f"Nội dung trọng tâm thuộc chủ đề: {request.focus_topic}. {request.message}"
 
-        context_text, references_list = get_active_context(search_query, request.user_id, request.notebook_id, k_needed=12, return_refs=True)
+        context_text, references_list = get_active_context(search_query, request.user_id, str(request.notebook_id), k_needed=chunk_size, return_refs=True)
         
         if not context_text:
             async def quick_reply(): yield "Rất tiếc, thông tin này không có trong tài liệu bạn đã tải lên dự án này. Vui lòng hỏi các nội dung xoay quanh tài liệu nhé! 📚"
-            supabase.table("chat_history").insert({"user_id": request.user_id, "notebook_id": int(request.notebook_id), "sender": "ai", "message": "Rất tiếc, thông tin này không có trong tài liệu bạn đã tải lên dự án này. Vui lòng hỏi các nội dung xoay quanh tài liệu nhé! 📚"}).execute()
+            supabase.table("chat_history").insert({"user_id": request.user_id, "notebook_id": int(request.notebook_id), "sender": "ai", "message": "Rất tiếc, thông tin này không có trong tài liệu bạn đã tải lên dự án này."}).execute()
             return StreamingResponse(quick_reply(), media_type="text/plain")
 
         # ==========================================
-        # 🚀 BƯỚC 4.2: DẶN DÒ AI VÀO "KỶ LUẬT" LỘ TRÌNH
+        # 🚀 BƯỚC 4.2: DẶN DÒ AI VÀO "KỶ LUẬT"
         # ==========================================
         system_instruction = "Bạn là Giáo sư AI thông minh và tận tâm."
+        
+        # Nếu đang tóm tắt, dặn AI viết siêu chi tiết
+        if is_summarizing:
+            system_instruction += " BẠN ĐANG ĐƯỢC YÊU CẦU TÓM TẮT/TỔNG HỢP KIẾN THỨC. Tuyệt đối KHÔNG viết ngắn. Hãy viết bài phân tích CỰC KỲ CHI TIẾT, ĐẦY ĐỦ VÀ SÂU SẮC dài ít nhất 500 chữ. Bắt buộc chia thành các phần rõ ràng (Mở đầu, Phân tích chi tiết các ý chính, Kết luận) và trình bày bằng Markdown (In đậm, Bullet points) để văn bản dễ đọc."
+            
         if getattr(request, "focus_topic", None):
             system_instruction += f" HIỆN TẠI SINH VIÊN ĐANG HỌC GIAI ĐOẠN: '{request.focus_topic}'. TUYỆT ĐỐI CHỈ trả lời và hướng dẫn các kiến thức xoay quanh phần này, KHÔNG ĐƯỢC lan man sang chủ đề khác."
             
@@ -76,7 +89,6 @@ async def chat_with_ai(request: ChatRequest):
             success = False
             last_error = ""
             
-            # Chiến thuật xoay tua Key và Model
             models_to_try = ["llama-3.3-70b-versatile", "llama3-8b-8192", "mixtral-8x7b-32768"]
             keys_to_try = list(GROQ_API_KEYS)
             random.shuffle(keys_to_try)
@@ -87,9 +99,8 @@ async def chat_with_ai(request: ChatRequest):
                     try:
                         client = Groq(api_key=key)
                         chat_completion = client.chat.completions.create(
-                            # 🚀 BƯỚC 4.3: TRUYỀN LỆNH KỶ LUẬT VÀO ĐÂY
                             messages=[{"role": "system", "content": system_instruction}, {"role": "user", "content": prompt}],
-                            model=model, temperature=0.1, max_tokens=3000, stream=True
+                            model=model, temperature=0.1, max_tokens=4000, stream=True
                         )
                         for chunk in chat_completion:
                             if chunk.choices[0].delta.content:
@@ -104,13 +115,12 @@ async def chat_with_ai(request: ChatRequest):
                         continue 
                         
             if not success:
-                yield f"\n[Hệ thống đang quá tải Token. Đã tự động thử {len(keys_to_try)} API Key và {len(models_to_try)} Mô hình nhưng đều thất bại. Chi tiết: {last_error}]"
+                yield f"\n[Hệ thống đang quá tải. Lỗi: {last_error}]"
                 return
 
             if full_ai_response and references_list:
                 filtered_refs = [ref for ref in references_list if f"[{ref['id']}]" in full_ai_response]
                 final_refs = filtered_refs if filtered_refs else references_list
-                
                 metadata_marker = f"|||METADATA|||{json.dumps(final_refs)}"
                 yield metadata_marker
                 full_ai_response += metadata_marker
