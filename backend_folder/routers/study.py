@@ -34,6 +34,8 @@ def get_random_context(user_id: str, notebook_id: str, k_needed: int = 20):
 
 
 # ==================== KHU VỰC QUIZ ====================
+# ==================== KHU VỰC QUIZ ====================
+# ==================== KHU VỰC QUIZ ====================
 @router.post("/api/quiz")
 async def generate_quiz(request: Request): 
     try:
@@ -43,9 +45,9 @@ async def generate_quiz(request: Request):
         num_questions = int(data.get("num_questions", 5))
         difficulty = data.get("difficulty", "Trung bình")
         quiz_type = data.get("quiz_type", "Trộn lẫn")
-        focus_topic = data.get("focus_topic") # 🚀 1. NHẬN CHỦ ĐỀ BÀI HỌC TỪ APP
+        focus_topic = data.get("focus_topic") # 🚀 NHẬN CHỦ ĐỀ BÀI HỌC TỪ APP
         
-        # 1. TẠO SỔ ĐEN
+        # 1. TẠO SỔ ĐEN (Chống lặp câu hỏi)
         forbidden_concepts = []
         try:
             history_res = supabase.table("quiz_decks").select("questions").eq("notebook_id", int(notebook_id)).eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
@@ -59,100 +61,97 @@ async def generate_quiz(request: Request):
             
         forbidden_str = ", ".join(forbidden_concepts) if forbidden_concepts else "Chưa có"
 
-        # 2. BỐC TÀI LIỆU (TÁCH BIỆT LOGIC THEO CHẾ ĐỘ)
-        k_size = min(12, num_questions * 2) 
+        # 2. BỐC TÀI LIỆU
+        k_size = min(20, num_questions * 2) if difficulty == "Phòng thi ảo" else min(12, num_questions * 2)
         
-        # 🚀 LOGIC CÁ NHÂN HÓA:
         if focus_topic and difficulty != "Phòng thi ảo":
-            # Đang học theo Roadmap -> Tìm tài liệu CHỈ thuộc bài này
             search_query = f"Nội dung trọng tâm thuộc chủ đề: {focus_topic}"
             context = get_active_context(search_query, user_id, str(notebook_id), k_needed=k_size)
             focus_instruction = f"BÁM SÁT VÀO KIẾN THỨC CỦA CHỦ ĐỀ NÀY: {focus_topic}"
         else:
-            # Thi ảo hoặc học tự do -> Bốc ngẫu nhiên FULL SÁCH
             context = get_random_context(user_id, str(notebook_id), k_needed=k_size)
-            focus_areas = [
-                "ĐÀO SÂU vào các khái niệm phụ",
-                "TÌM KIẾM các con số, mốc thời gian, số liệu",
-                "TẬP TRUNG vào nguyên lý hoạt động, cơ chế",
-                "KHAI THÁC các ví dụ thực tế",
-                "PHÂN TÍCH sự khác biệt, ưu/nhược điểm"
-            ]
+            focus_areas = ["ĐÀO SÂU vào các khái niệm phụ", "TÌM KIẾM các con số, số liệu", "TẬP TRUNG vào nguyên lý", "KHAI THÁC ví dụ thực tế"]
             focus_instruction = random.choice(focus_areas)
         
         if not context:
             return {"data": [{"type": "multiple_choice", "question": "Bạn chưa tải file PDF!", "options": ["Đã hiểu"], "answer": "Đã hiểu", "concept": "Lỗi", "source_page": "0", "explanation": "Vui lòng tải tài liệu."}]}
             
-        random_seed = random.randint(10000, 99999) 
+        difficulty_instruction = "MỨC ĐỘ TRUNG BÌNH - KHÓ" if difficulty == "Phòng thi ảo" else f"MỨC ĐỘ: {difficulty}"
 
-        difficulty_instruction = ""
-        if difficulty == "Dễ": difficulty_instruction = "MỨC ĐỘ DỄ: Hỏi trực tiếp vào định nghĩa."
-        elif difficulty == "Trung bình": difficulty_instruction = "MỨC ĐỘ TRUNG BÌNH: Đưa ra đặc điểm, ví dụ, phân tích."
-        elif difficulty == "Khó": difficulty_instruction = "MỨC ĐỘ KHÓ: Yêu cầu suy luận, kết hợp nhiều kiến thức. Đáp án bẫy tinh vi."
-        elif difficulty == "Phòng thi ảo": difficulty_instruction = "TRỘN LẪN ĐỘ KHÓ DỄ - TRUNG BÌNH - KHÓ."
-
-        type_instruction = ""
-        if quiz_type == "Phòng thi ảo" or difficulty == "Phòng thi ảo":
-            type_instruction = '''ĐÂY LÀ BÀI THI CHUẨN MỰC. BẠN BẮT BUỘC PHẢI TẠO 30 CÂU HỎI THEO THỨ TỰ SAU:
-        - Câu 1 đến 20: "multiple_choice" (Trắc nghiệm 4 đáp án).
-        - Câu 21 đến 24: "true_false" (Đúng/Sai).
-        - Câu 25 đến 28: "fill_in_blank" (ĐOẠN VĂN KÉO THẢ NHIỀU Ô TRỐNG. BẮT BUỘC đục 3-5 lỗ trống "___". "options" chứa 6-8 từ gồm cả đúng và sai. "answer" nối bằng "|").
-        - Câu 29 đến 30: "short_answer" (Trả lời ngắn).
-        TUYỆT ĐỐI KHÔNG LÀM SAI TỔNG SỐ LƯỢNG 30 CÂU!'''
-            num_questions = 30 
+        # 🚀 HÀM NỘI BỘ GỌI AI THEO TỪNG ĐỢT (CHỐNG LỖI TOKEN)
+        def call_ai_batch(target_num, type_instr):
+            random_seed = random.randint(10000, 99999) 
+            prompt = f"""
+            Bạn là chuyên gia khảo thí. Dựa vào TÀI LIỆU sau, tạo ĐÚNG {target_num} câu hỏi.
+            TÀI LIỆU: {context}
             
-        elif quiz_type == "Trắc nghiệm":
-            type_instruction = 'Bạn CHỈ ĐƯỢC TẠO DUY NHẤT loại câu hỏi "multiple_choice" (Trắc nghiệm 4 đáp án).'
-        elif quiz_type == "Đúng/Sai":
-            type_instruction = 'Bạn CHỈ ĐƯỢC TẠO DUY NHẤT loại câu hỏi "true_false" (options luôn là ["Đúng", "Sai"]).'
-        elif quiz_type == "Điền khuyết":
-            type_instruction = '''Bạn CHỈ ĐƯỢC TẠO DUY NHẤT loại câu hỏi "fill_in_blank".
-        🚨 LƯU Ý TỐI QUAN TRỌNG: 
-        - Mỗi câu hỏi PHẢI LÀ MỘT ĐOẠN VĂN, đục ÍT NHẤT 3 ĐẾN 4 lỗ trống bằng dấu "___". TUYỆT ĐỐI KHÔNG làm câu chỉ có 1 lỗ trống!
-        - Trường "options" phải chứa TẤT CẢ các đáp án đúng và thêm 3 từ nhiễu sai.
-        - Trường "answer" nối các đáp án đúng theo thứ tự bằng dấu "|".
-        👉 VÍ DỤ: {"type": "fill_in_blank", "question": "Hệ điều hành là một ___ quản lý ___ và phần mềm máy tính, cung cấp các ___ chung", "options": ["phần mềm", "tiện ích", "phần cứng", "dịch vụ", "ứng dụng", "bộ nhớ"], "answer": "phần mềm|phần cứng|dịch vụ", "concept": "Hệ điều hành", "source_page": "1", "explanation": "..."}'''
-        elif quiz_type == "Trả lời ngắn":
-            type_instruction = 'Bạn CHỈ ĐƯỢC TẠO DUY NHẤT loại câu hỏi "short_answer" (Trả lời bằng 1-3 từ khóa. Trường "options" ĐỂ MẢNG RỖNG []).'
-        else:
-            type_instruction = '''Bạn BẮT BUỘC PHẢI TRỘN LẪN 4 loại câu hỏi sau:
-        - "multiple_choice": Trắc nghiệm 4 đáp án.
-        - "true_false": Đúng hoặc Sai.
-        - "fill_in_blank": Đoạn văn điền khuyết (BẮT BUỘC đục 3-4 lỗ "___". "options" cho 6-8 từ. "answer" nối bằng "|").
-        - "short_answer": Câu hỏi ngắn gọn, yêu cầu trả lời bằng 2-3 từ khóa.'''
+            CHÚ Ý ĐỘ KHÓ: {difficulty_instruction}
+            
+            ⛔ MỆNH LỆNH ĐỔI MỚI (Hạt giống: {random_seed}):
+            1. GÓC NHÌN: {focus_instruction}. 
+            2. HẠN CHẾ TRÙNG LẶP: Né các chủ đề này ra: [{forbidden_str}].
+            
+            🚀 YÊU CẦU LOẠI CÂU HỎI BẮT BUỘC:
+            {type_instr}
+            
+            YÊU CẦU JSON: Trả về CHỈ 1 MẢNG JSON. KHÔNG BỌC TRONG DẤU ```json, KHÔNG GIẢI THÍCH THÊM.
+            [
+              {{
+                "type": "multiple_choice",
+                "question": "Nội dung câu hỏi?", 
+                "options": ["A", "B", "C", "D"],
+                "answer": "A", 
+                "concept": "Tên khái niệm",
+                "source_page": "Trang",
+                "explanation": "Giải thích chi tiết."
+              }}
+            ]
+            """
+            try:
+                raw_text = call_groq(prompt, is_chat_mode=False, temp=0.85).replace("```json", "").replace("```", "").strip()
+                # Ép tìm và bóc tách mảng JSON
+                start_idx = raw_text.find('[')
+                end_idx = raw_text.rfind(']')
+                if start_idx != -1 and end_idx != -1:
+                    clean_json = raw_text[start_idx:end_idx+1]
+                    return extract_json_array(json.loads(clean_json, strict=False), ["type", "question", "options", "answer", "concept", "source_page", "explanation"])
+            except Exception as e:
+                print(f"Lỗi AI Batch: {e}")
+            return []
 
-        prompt = f"""
-        Bạn là chuyên gia khảo thí. Dựa vào TÀI LIỆU sau, tạo {num_questions} câu hỏi.
-        TÀI LIỆU: {context}
+        # 3. CHIA NHÁNH LOGIC: PHÒNG THI ẢO VS LUYỆN TẬP THƯỜNG
+        quiz_data = []
         
-        CHÚ Ý ĐỘ KHÓ: {difficulty_instruction}
-        
-        ⛔ MỆNH LỆNH ĐỔI MỚI (Hạt giống: {random_seed}):
-        1. GÓC NHÌN: {focus_instruction}. 
-        2. HẠN CHẾ TRÙNG LẶP: Né các chủ đề này ra: [{forbidden_str}].
-        
-        🚀 YÊU CẦU LOẠI CÂU HỎI:
-        {type_instruction}
-        
-        YÊU CẦU JSON BẮT BUỘC: Trả về CHỈ 1 MẢNG JSON. Không giải thích thêm.
-        [
-          {{
-            "type": "multiple_choice",
-            "question": "Nội dung câu hỏi?", 
-            "options": ["A", "B", "C", "D"],
-            "answer": "A", 
-            "concept": "Tên khái niệm",
-            "source_page": "Trang",
-            "explanation": "Giải thích chi tiết."
-          }}
-        ]
-        """
-        
-        raw_text = call_groq(prompt, is_chat_mode=False, temp=0.85).replace("```json", "").replace("```", "").strip()
-        quiz_data = extract_json_array(json.loads(raw_text), ["type", "question", "options", "answer", "concept", "source_page", "explanation"]) 
-        
+        if quiz_type == "Phòng thi ảo" or difficulty == "Phòng thi ảo":
+            # ĐỢT 1: 20 CÂU TRẮC NGHIỆM
+            instr_1 = 'BẠN PHẢI TẠO ĐÚNG 20 CÂU HỎI LOẠI "multiple_choice" (Trắc nghiệm 4 đáp án).'
+            batch_1 = call_ai_batch(20, instr_1)
+            
+            # ĐỢT 2: 10 CÂU CÒN LẠI
+            instr_2 = '''BẠN PHẢI TẠO ĐÚNG 10 CÂU HỎI THEO ĐÚNG THỨ TỰ SAU:
+            - 4 CÂU ĐẦU: "true_false" (options luôn là ["Đúng", "Sai"]).
+            - 4 CÂU TIẾP THEO: "fill_in_blank" (Đoạn văn đục 3-4 lỗ "___". "options" chứa 6-8 từ. "answer" nối bằng "|").
+            - 2 CÂU CUỐI CÙNG: "short_answer" (Trả lời bằng 1-3 từ khóa. "options" để mảng rỗng []).'''
+            batch_2 = call_ai_batch(10, instr_2)
+            
+            quiz_data = batch_1 + batch_2
+        else:
+            # XỬ LÝ CHO CÁC CHẾ ĐỘ LUYỆN TẬP THƯỜNG
+            type_instruction = ""
+            if quiz_type == "Trắc nghiệm": type_instruction = 'CHỈ TẠO câu hỏi "multiple_choice" (Trắc nghiệm 4 đáp án).'
+            elif quiz_type == "Đúng/Sai": type_instruction = 'CHỈ TẠO câu hỏi "true_false" (options là ["Đúng", "Sai"]).'
+            elif quiz_type == "Điền khuyết": type_instruction = 'CHỈ TẠO "fill_in_blank" (Đục 3-4 lỗ "___", answer nối bằng "|").'
+            elif quiz_type == "Trả lời ngắn": type_instruction = 'CHỈ TẠO "short_answer" (Trả lời ngắn, options là []).'
+            else: type_instruction = 'TRỘN LẪN ngẫu nhiên 4 loại: multiple_choice, true_false, fill_in_blank, short_answer.'
+            
+            quiz_data = call_ai_batch(num_questions, type_instruction)
+
+        # Kiểm tra an toàn nếu AI lỗi hoàn toàn
+        if not quiz_data:
+            return {"data": [{"type": "multiple_choice", "question": "Hệ thống AI đang bị quá tải, vui lòng thử lại.", "options": ["OK"], "answer": "OK", "concept": "Lỗi", "source_page": "0", "explanation": "Lỗi API"}]}
+
+        # 4. LƯU VÀO DATABASE
         deck_title = f"Đề {difficulty} ({datetime.now().strftime('%H:%M %d/%m')})"
-        # 🚀 ĐỔI TÊN ĐỀ NẾU LÀ ĐỀ ÔN THEO BÀI
         if focus_topic and difficulty != "Phòng thi ảo":
             deck_title = f"Đề Ôn Lộ Trình ({datetime.now().strftime('%H:%M')})"
 
@@ -163,7 +162,6 @@ async def generate_quiz(request: Request):
         return {"status": "success", "deck_id": res.data[0]['id'], "data": quiz_data}
     except Exception as e:
         return {"data": [{"type": "multiple_choice", "question": "Hệ thống bị gián đoạn.", "options": ["OK"], "answer": "OK", "concept": "Lỗi", "source_page": "0", "explanation": str(e)}]}
-
 # ==================== CÁC API LỊCH SỬ QUIZ ====================
 @router.get("/api/quiz/history/{notebook_id}")
 async def get_quiz_history(notebook_id: int, user_id: str):
@@ -614,7 +612,7 @@ async def generate_concept_map(request: Request):
         }}
         """
         
-        # Gọi thẳng Groq API
+        # Gọi thẳng Groq API (Chỗ này lúc nãy bạn gõ nhầm chữ h0 nè)
         client = Groq(api_key=GROQ_API_KEYS[0])
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],

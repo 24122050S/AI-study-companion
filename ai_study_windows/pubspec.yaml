@@ -30,3 +30,18 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  assets:
+      - assets/images/pg1.png
+      - assets/images/home_screen.jpg
+      - assets/images/bg_knowledge.jpg
+      - assets/images/quiz_illustration.jpg
+      - assets/images/fc_books.png
+      - assets/images/fc_plant.png
+      - assets/images/fc_pen.png
+      - assets/images/fc_laptop.png
+      - assets/images/fc_bag.png
+      - assets/images/history_map_legend.jpg
+      - assets/images/mind_map.jpg
+      - assets/images/notebook.jpg
+      - assets/images/road.png
