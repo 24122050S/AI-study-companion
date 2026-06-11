@@ -5,6 +5,9 @@ import 'dart:convert';
 import 'api_constants.dart';
 
 // ============================================================
+//  FILE THAY THẾ: ai_study_windows/lib/concept_map_screen.dart
+//  🚀 MỚI: Ấn vào node -> Bottom sheet giải thích khái niệm (RAG)
+//
 //  HƯỚNG DẪN THIẾT LẬP HÌNH NỀN
 //  1. Sao chép file mind_map.jpg vào thư mục: assets/images/
 //  2. Thêm vào pubspec.yaml:
@@ -34,6 +37,9 @@ class _ConceptMapScreenState extends State<ConceptMapScreen>
 
   List<dynamic> _nodesData = [];
   final Set<String> _childNodeIds = {}; // Dùng để phân biệt node gốc & node con
+
+  // 🚀 MỚI: Cache giải thích — ấn lại cùng 1 node sẽ không gọi lại API
+  final Map<String, String> _explainCache = {};
 
   // ── Bảng màu: lấy cảm hứng từ doodle yellow & ink black ──────────────────
   static const Color _inkBlack = Color(0xFF1C1C1E);
@@ -85,6 +91,7 @@ class _ConceptMapScreenState extends State<ConceptMapScreen>
       _isLoading = true;
       _errorMessage = "";
       _childNodeIds.clear();
+      _explainCache.clear(); // 🚀 MỚI: sơ đồ mới -> xóa cache giải thích cũ
       // Xóa graph cũ trước khi vẽ lại
       for (final node in List.from(_graph.nodes)) {
         _graph.removeNode(node);
@@ -139,6 +146,190 @@ class _ConceptMapScreenState extends State<ConceptMapScreen>
     }
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // 🚀 MỚI: GỌI API RAG GIẢI THÍCH KHÁI NIỆM CỦA NODE
+  // ════════════════════════════════════════════════════════════════════════
+  Future<String> _fetchNodeExplanation(String label) async {
+    if (_explainCache.containsKey(label)) return _explainCache[label]!;
+
+    final response = await http.post(
+      Uri.parse("${ApiConstants.baseUrl}/api/concept_map/explain"),
+      headers: {"Content-Type": "application/json"},
+      body: jsonEncode({
+        "user_id": widget.username,
+        "notebook_id": widget.notebookId,
+        "concept": label,
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(utf8.decode(response.bodyBytes));
+      if (data['status'] == 'success') {
+        final String text =
+            (data['data']?['explanation'] ?? "Không có nội dung.").toString();
+        _explainCache[label] = text; // chỉ cache khi thành công
+        return text;
+      }
+      throw Exception(data['message'] ?? "Lỗi không xác định");
+    }
+    throw Exception("Máy chủ trả về lỗi: ${response.statusCode}");
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 🚀 MỚI: BOTTOM SHEET HIỂN THỊ GIẢI THÍCH (PHONG CÁCH DOODLE)
+  // ════════════════════════════════════════════════════════════════════════
+  void _showNodeExplanation(String label) {
+    // Tạo Future MỘT LẦN ở đây để kéo/thả bottom sheet không gọi lại API
+    final Future<String> explanationFuture = _fetchNodeExplanation(label);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) => DraggableScrollableSheet(
+        initialChildSize: 0.5,
+        minChildSize: 0.3,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (_, scrollCtrl) => Container(
+          decoration: BoxDecoration(
+            color: _paperWhite,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+            border: Border.all(color: _inkBlack, width: 3),
+          ),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Thanh kéo
+              Center(
+                child: Container(
+                  width: 44,
+                  height: 5,
+                  margin: const EdgeInsets.only(bottom: 14),
+                  decoration: BoxDecoration(
+                    color: _inkBlack.withOpacity(0.25),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                ),
+              ),
+
+              // Tiêu đề = tên khái niệm (thẻ vàng doodle)
+              Row(
+                children: [
+                  Flexible(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: _doodleYellow,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: _inkBlack, width: 2.5),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: _inkBlack,
+                            blurRadius: 0,
+                            offset: Offset(3, 3),
+                          ),
+                        ],
+                      ),
+                      child: Text(
+                        label,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 15,
+                          color: _inkBlack,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+
+              // Nội dung giải thích lấy từ RAG
+              Expanded(
+                child: FutureBuilder<String>(
+                  future: explanationFuture,
+                  builder: (context, snapshot) {
+                    // Đang tra cứu tài liệu
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              width: 38,
+                              height: 38,
+                              child: CircularProgressIndicator(
+                                color: _inkBlack,
+                                strokeWidth: 3.5,
+                                strokeCap: StrokeCap.round,
+                              ),
+                            ),
+                            SizedBox(height: 14),
+                            Text(
+                              "AI đang tra cứu tài liệu của bạn...",
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: _inkBlack,
+                                fontSize: 13.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+
+                    // Có lỗi
+                    if (snapshot.hasError) {
+                      final msg = snapshot.error
+                          .toString()
+                          .replaceFirst("Exception: ", "");
+                      return Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.error_outline_rounded,
+                                color: Colors.redAccent, size: 34),
+                            const SizedBox(height: 10),
+                            Text(
+                              msg,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: Colors.redAccent,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13.5,
+                                height: 1.4,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+
+                    // Hiển thị giải thích
+                    return SingleChildScrollView(
+                      controller: scrollCtrl,
+                      child: Text(
+                        snapshot.data ?? "Không có nội dung.",
+                        style: const TextStyle(
+                          fontSize: 14.5,
+                          height: 1.65,
+                          color: _inkBlack,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   // ── Khối thiết kế Node ────────────────────────────────────────────────────
   Widget _buildNodeWidget(Node node) {
     final String nodeId = node.key!.value.toString();
@@ -148,16 +339,14 @@ class _ConceptMapScreenState extends State<ConceptMapScreen>
     );
 
     final bool isRoot = !_childNodeIds.contains(nodeId);
+    final String label = (nodeData['label'] ?? "?").toString();
+    const Color nodeColor = Color(0xFF1B3A6B); // Navy đậm
 
-    // Lấy index của node trong danh sách để chọn màu xen kẽ
-    final int nodeIndex = _nodesData.indexWhere(
-      (n) => n['id'].toString() == nodeId,
-    );
-    final Color nodeColor = const Color(0xFF1B3A6B); // Navy đậm
+    Widget bubble;
 
     if (isRoot) {
       // ══ Node gốc: phong cách "IDEAS" - vàng nổi bật với bóng mực ══
-      return Container(
+      bubble = Container(
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
         constraints: const BoxConstraints(maxWidth: 210),
         decoration: BoxDecoration(
@@ -174,7 +363,7 @@ class _ConceptMapScreenState extends State<ConceptMapScreen>
           ],
         ),
         child: Text(
-          nodeData['label'],
+          label,
           textAlign: TextAlign.center,
           style: const TextStyle(
             fontWeight: FontWeight.w900,
@@ -187,7 +376,7 @@ class _ConceptMapScreenState extends State<ConceptMapScreen>
       );
     } else {
       // ══ Node con: màu đậm tương phản mạnh, chữ trắng ══
-      return Container(
+      bubble = Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
         constraints: const BoxConstraints(maxWidth: 175),
         decoration: BoxDecoration(
@@ -204,7 +393,7 @@ class _ConceptMapScreenState extends State<ConceptMapScreen>
           ],
         ),
         child: Text(
-          nodeData['label'],
+          label,
           textAlign: TextAlign.center,
           style: const TextStyle(
             fontWeight: FontWeight.bold,
@@ -215,6 +404,12 @@ class _ConceptMapScreenState extends State<ConceptMapScreen>
         ),
       );
     }
+
+    // 🚀 MỚI: Ấn vào node -> mở bottom sheet giải thích khái niệm bằng RAG
+    return GestureDetector(
+      onTap: () => _showNodeExplanation(label),
+      child: bubble,
+    );
   }
 
   // ── Widget loading có hoạt ảnh nhịp đập ──────────────────────────────────
@@ -281,7 +476,8 @@ class _ConceptMapScreenState extends State<ConceptMapScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.wifi_off_rounded, color: Colors.redAccent, size: 36),
+            const Icon(Icons.wifi_off_rounded,
+                color: Colors.redAccent, size: 36),
             const SizedBox(height: 12),
             Text(
               _errorMessage,
@@ -304,7 +500,8 @@ class _ConceptMapScreenState extends State<ConceptMapScreen>
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(color: _inkBlack, width: 2),
                   boxShadow: const [
-                    BoxShadow(color: _inkBlack, blurRadius: 0, offset: Offset(3, 3))
+                    BoxShadow(
+                        color: _inkBlack, blurRadius: 0, offset: Offset(3, 3))
                   ],
                 ),
                 child: const Row(
@@ -379,7 +576,8 @@ class _ConceptMapScreenState extends State<ConceptMapScreen>
               child: Tooltip(
                 message: "Tạo sơ đồ mới",
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
                     color: _doodleYellow,
                     borderRadius: BorderRadius.circular(8),
@@ -395,7 +593,8 @@ class _ConceptMapScreenState extends State<ConceptMapScreen>
                   child: const Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.auto_fix_high_rounded, color: _inkBlack, size: 16),
+                      Icon(Icons.auto_fix_high_rounded,
+                          color: _inkBlack, size: 16),
                       SizedBox(width: 5),
                       Text(
                         "Tạo mới",
@@ -463,6 +662,45 @@ class _ConceptMapScreenState extends State<ConceptMapScreen>
                     ..style = PaintingStyle.stroke
                     ..strokeCap = StrokeCap.round,
                   builder: (Node node) => _buildNodeWidget(node),
+                ),
+              ),
+            ),
+
+          // ── 🚀 MỚI: Lớp 4 — Gợi ý "Ấn vào node để xem giải thích" ─────────
+          if (!_isLoading && _errorMessage.isEmpty)
+            Positioned(
+              bottom: 18,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: _paperWhite.withOpacity(0.92),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: _inkBlack, width: 2),
+                    boxShadow: const [
+                      BoxShadow(
+                          color: _inkBlack, blurRadius: 0, offset: Offset(3, 3))
+                    ],
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.touch_app_rounded,
+                          size: 16, color: _inkBlack),
+                      SizedBox(width: 6),
+                      Text(
+                        "Ấn vào một node để xem giải thích khái niệm",
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: _inkBlack,
+                          fontSize: 12.5,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
