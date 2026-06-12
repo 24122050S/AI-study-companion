@@ -13,6 +13,7 @@ const Color cText       = Color(0xFF2C4A45);
 const Color cTextLight  = Color(0xFF7A9E99);
 const Color cYellow     = Color(0xFFFFCC5C);
 const Color cPeach      = Color(0xFFF5C8B8);
+const Color cBorder     = Color(0xFFD2E8E3);
 
 class QuizReviewScreen extends StatelessWidget {
   final List<dynamic> questions;
@@ -24,17 +25,23 @@ class QuizReviewScreen extends StatelessWidget {
     required this.userAnswers,
   });
 
-  // ─── TÍNH THỐNG KÊ ─────────────────────────────────────────────────────────
-  int get _correctCount =>
-      List.generate(questions.length, (i) => i)
-          .where((i) => userAnswers[i] == questions[i]['answer'])
-          .length;
+  // ─── TÍNH TOÁN KẾT QUẢ THÔNG MINH ─────────────────────────────────────────
+  bool _isAnswerCorrect(int index) {
+    final String? user = userAnswers[index];
+    if (user == null || user.trim().isEmpty) return false;
+    final String correct = questions[index]['answer'].toString();
+    String cleanUser = user.toLowerCase().replaceAll(' | ', '|').replaceAll(' |', '|').replaceAll('| ', '|');
+    String cleanCorrect = correct.toLowerCase().replaceAll(' | ', '|').replaceAll(' |', '|').replaceAll('| ', '|');
+    return cleanUser == cleanCorrect;
+  }
 
-  int get _skippedCount =>
-      List.generate(questions.length, (i) => i)
-          .where((i) => userAnswers[i] == null)
-          .length;
+  bool _isAnswerSkipped(int index) {
+    final String? user = userAnswers[index];
+    return user == null || user.trim().isEmpty;
+  }
 
+  int get _correctCount => List.generate(questions.length, (i) => i).where(_isAnswerCorrect).length;
+  int get _skippedCount => List.generate(questions.length, (i) => i).where(_isAnswerSkipped).length;
   int get _wrongCount => questions.length - _correctCount - _skippedCount;
 
   @override
@@ -79,7 +86,6 @@ class QuizReviewScreen extends StatelessWidget {
               onTap: () => Navigator.pop(context),
             ),
             const SizedBox(width: 14),
-            // Badge: Xem lại bài làm
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               decoration: BoxDecoration(
@@ -97,7 +103,6 @@ class QuizReviewScreen extends StatelessWidget {
               ]),
             ),
             const SizedBox(width: 10),
-            // Badge: tổng câu
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
@@ -122,7 +127,7 @@ class QuizReviewScreen extends StatelessWidget {
     );
   }
 
-  // ─── DESKTOP: 2 CỘT ─────────────────────────────────────────────────────────
+  // ─── DESKTOP & MOBILE LAYOUT ───────────────────────────────────────────────
   Widget _buildDesktopLayout(Size size) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -133,7 +138,6 @@ class QuizReviewScreen extends StatelessWidget {
     );
   }
 
-  // ─── MOBILE ──────────────────────────────────────────────────────────────────
   Widget _buildMobileLayout() {
     return Column(
       children: [
@@ -207,12 +211,14 @@ class QuizReviewScreen extends StatelessWidget {
 
   // ─── CARD TỪNG CÂU ───────────────────────────────────────────────────────────
   Widget _buildReviewCard(dynamic q, int index) {
+    final String type = q['type'] ?? 'multiple_choice';
     final String correctAnswer = q['answer'].toString();
     final String? selected = userAnswers[index];
-    final bool isCorrect = selected == correctAnswer;
-    final bool isSkipped = selected == null;
+    final String explanation = q['explanation']?.toString() ?? '';
+    
+    final bool isCorrect = _isAnswerCorrect(index);
+    final bool isSkipped = _isAnswerSkipped(index);
 
-    // Màu theme theo kết quả
     final Color themeColor = isCorrect ? cMint : (isSkipped ? cYellow : cCoral);
     final List<dynamic> options = (q['options'] as List?) ?? [];
 
@@ -235,7 +241,6 @@ class QuizReviewScreen extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Số thứ tự
                 Container(
                   width: 36, height: 36,
                   decoration: BoxDecoration(color: themeColor, borderRadius: BorderRadius.circular(10)),
@@ -254,7 +259,6 @@ class QuizReviewScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 8),
-                // Badge kết quả
                 _ResultBadge(isCorrect: isCorrect, isSkipped: isSkipped),
               ],
             ),
@@ -265,7 +269,8 @@ class QuizReviewScreen extends StatelessWidget {
             padding: const EdgeInsets.all(16),
             child: Column(
               children: [
-                if (options.isNotEmpty)
+                // 1. GIAO DIỆN TRẮC NGHIỆM
+                if (type == 'multiple_choice')
                   ...options.map((opt) {
                     final String optText = opt.toString();
                     final bool isThisCorrect = optText == correctAnswer;
@@ -282,12 +287,83 @@ class QuizReviewScreen extends StatelessWidget {
                       isSelected: isThisSelected,
                     );
                   })
+                  
+                // 2. GIAO DIỆN CÂU ĐÚNG SAI
+                else if (type == 'true_false')
+                  Column(
+                    children: List.generate(options.length, (optIndex) {
+                      String optText = options[optIndex].toString();
+                      String currentAnsStr = selected ?? "";
+                      List<String> currentSelections = currentAnsStr.split("|");
+                      if (currentSelections.length < options.length) {
+                        List<String> newSelections = List.filled(options.length, "");
+                        for(int i = 0; i < currentSelections.length; i++) {
+                          if (i < options.length) newSelections[i] = currentSelections[i];
+                        }
+                        currentSelections = newSelections;
+                      }
+                      
+                      List<String> correctAnswers = correctAnswer.split("|");
+                      String myChoice = currentSelections[optIndex]; 
+                      String correctChoice = optIndex < correctAnswers.length ? correctAnswers[optIndex] : "";
+                      
+                      bool isCorrectRow = myChoice.isNotEmpty && myChoice.toLowerCase() == correctChoice.toLowerCase();
+                      bool isWrongRow = myChoice.isNotEmpty && myChoice.toLowerCase() != correctChoice.toLowerCase();
+                      bool isMissedRow = myChoice.isEmpty;
+
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: isCorrectRow ? cMint.withOpacity(0.1) : (isWrongRow || isMissedRow ? cCoral.withOpacity(0.1) : cCardTinted),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: isCorrectRow ? cMint : (isWrongRow || isMissedRow ? cCoral : cBorder),
+                          ),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text("${String.fromCharCode(65 + optIndex)}. $optText", style: const TextStyle(fontSize: 14.5, color: cDark, fontWeight: FontWeight.w600, height: 1.4)),
+                                  const SizedBox(height: 8),
+                                  Row(
+                                    children: [
+                                      if (isCorrectRow) const Icon(Icons.check_circle, color: cMintDark, size: 18)
+                                      else const Icon(Icons.cancel, color: cCoral, size: 18),
+                                      const SizedBox(width: 6),
+                                      Expanded(
+                                        child: Text(
+                                          isMissedRow 
+                                              ? "Bỏ trống. Đáp án đúng: $correctChoice"
+                                              : (isCorrectRow ? "Bạn đã chọn đúng: $myChoice" : "Bạn chọn $myChoice. Đáp án đúng: $correctChoice"),
+                                          style: TextStyle(
+                                            color: isCorrectRow ? cMintDark : cCoral, 
+                                            fontWeight: FontWeight.bold, 
+                                            fontSize: 13
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                  )
+                  
+                // 3. GIAO DIỆN CÂU ĐIỀN KHUYẾT / TỰ LUẬN
                 else
-                  // Hiển thị dạng text nếu không có options (trắc nghiệm tự luận)
                   _buildTextReview(selected, correctAnswer, isSkipped),
 
                 // ── Nhãn kết quả cuối card ──
-                const SizedBox(height: 4),
+                const SizedBox(height: 10),
                 Container(
                   padding: const EdgeInsets.all(14),
                   decoration: BoxDecoration(
@@ -302,17 +378,17 @@ class QuizReviewScreen extends StatelessWidget {
                         isCorrect
                             ? Icons.check_circle_rounded
                             : (isSkipped ? Icons.help_outline_rounded : Icons.cancel_rounded),
-                        color: isCorrect ? cMintDark : (isSkipped ? cYellow : cCoral),
+                        color: isCorrect ? cMintDark : (isSkipped ? const Color(0xFFD4A847) : cCoral),
                         size: 22,
                       ),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
                           isCorrect
-                              ? "✅ Tuyệt vời! Bạn đã chọn đúng."
+                              ? "✅ Tuyệt vời! Bạn đã trả lời đúng."
                               : isSkipped
-                                  ? "⚠️ Bạn đã bỏ trống. Đáp án đúng: $correctAnswer"
-                                  : "❌ Sai. Đáp án đúng là: $correctAnswer",
+                                  ? "⚠️ Bạn đã bỏ trống. Đáp án đúng: ${correctAnswer.replaceAll('|', ', ')}"
+                                  : "❌ Sai. Đáp án đúng là: ${correctAnswer.replaceAll('|', ', ')}",
                           style: TextStyle(
                             color: isCorrect ? cMintDark : (isSkipped ? const Color(0xFF8A6200) : cCoral),
                             fontWeight: FontWeight.w700,
@@ -324,6 +400,37 @@ class QuizReviewScreen extends StatelessWidget {
                     ],
                   ),
                 ),
+
+                // ── VÙNG GIẢI THÍCH (ĐÃ ĐƯỢC KHÔI PHỤC) ──
+                if (explanation.isNotEmpty)
+                  Container(
+                    margin: const EdgeInsets.only(top: 12),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: cYellow.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: cYellow.withOpacity(0.4), width: 1.5),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.lightbulb_rounded, color: Color(0xFFD4A847), size: 22),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            "Giải thích: $explanation",
+                            style: const TextStyle(
+                              color: cDark,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 14.5,
+                              height: 1.5,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
               ],
             ),
           ),
@@ -336,12 +443,12 @@ class QuizReviewScreen extends StatelessWidget {
     return Column(
       children: [
         _ReviewOptionTile(
-          text: isSkipped ? "Bỏ trống" : selected!,
+          text: isSkipped ? "Bỏ trống" : selected!.replaceAll('|', ', '),
           state: isSkipped ? _OptionState.normal : (selected == correct ? _OptionState.correct : _OptionState.wrong),
           isSelected: true,
         ),
         if (!isSkipped && selected != correct)
-          _ReviewOptionTile(text: correct, state: _OptionState.correct, isSelected: false),
+          _ReviewOptionTile(text: correct.replaceAll('|', ', '), state: _OptionState.correct, isSelected: false),
       ],
     );
   }

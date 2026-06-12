@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'api_constants.dart';
 
+
 // ─── BẢNG MÀU "PASTEL EXPLORER" ───────────────────────────────────────────
 const Color cPink     = Color(0xFFEF8F9A);
 const Color cPinkDeep = Color(0xFFD95F72);
@@ -28,6 +29,7 @@ class HistoryScreen extends StatefulWidget {
 
 class _HistoryScreenState extends State<HistoryScreen> {
   List<dynamic> _history = [];
+  String _aiRecommendation = "";
   bool _isLoading = false;
 
   @override
@@ -36,14 +38,23 @@ class _HistoryScreenState extends State<HistoryScreen> {
     _fetchHistory();
   }
 
+  // Đã cập nhật: Gọi 2 API cùng lúc (Lấy Bảng điểm + Lấy Gợi ý AI)
   Future<void> _fetchHistory() async {
     setState(() => _isLoading = true);
     try {
       final response = await http.get(
           Uri.parse("${ApiConstants.baseUrl}/api/history/${widget.username}"));
+      
+      final recResponse = await http.get(
+          Uri.parse("${ApiConstants.baseUrl}/api/recommend/${widget.username}"));
+
       if (response.statusCode == 200) {
-        setState(() =>
-            _history = jsonDecode(utf8.decode(response.bodyBytes)));
+        setState(() {
+          _history = jsonDecode(utf8.decode(response.bodyBytes));
+          if (recResponse.statusCode == 200) {
+            _aiRecommendation = jsonDecode(utf8.decode(recResponse.bodyBytes))['recommendation'] ?? "";
+          }
+        });
       }
     } catch (e) {
       debugPrint("Lỗi: $e");
@@ -274,11 +285,45 @@ class _HistoryScreenState extends State<HistoryScreen> {
     return ListView.builder(
       padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),
       physics: const BouncingScrollPhysics(),
-      itemCount: _history.length + 1,
+      itemCount: _history.length + 2, // Đã cộng thêm 2 item (1 cho tiêu đề, 1 cho khung AI)
       itemBuilder: (context, index) {
+        
+        // Vị trí số 1: Tiêu đề
         if (index == 0) return _buildHeroHeader();
 
-        final item = _history[index - 1];
+        // Vị trí số 2: Khung Gợi ý Gia sư AI
+        if (index == 1) {
+          if (_aiRecommendation.isEmpty) return const SizedBox.shrink();
+          return Container(
+            margin: const EdgeInsets.only(bottom: 24),
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: cYellow.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: cYellow.withOpacity(0.5), width: 1.5),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.psychology_rounded, color: Color(0xFFD4A847), size: 24),
+                    SizedBox(width: 8),
+                    Text("Gia sư AI gợi ý:", style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFFD4A847), fontSize: 16)),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  _aiRecommendation,
+                  style: const TextStyle(fontSize: 14.5, color: cText, height: 1.5, fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+          );
+        }
+
+        // Vị trí số 3 trở đi: Lịch sử điểm số (Lùi index đi 2)
+        final item = _history[index - 2];
         final double percent = (item['percentage'] ?? 0.0).toDouble();
         final Color accent = _scoreColor(percent);
         final String label = _scoreLabel(percent);

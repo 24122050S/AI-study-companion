@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter_markdown/flutter_markdown.dart';
-import 'floating_concept_map.dart';
 
 import 'quiz_review_screen.dart';
 import 'api_constants.dart';
@@ -489,37 +488,24 @@ class _QuizScreenState extends State<QuizScreen> with TickerProviderStateMixin {
 
     return Scaffold(
       backgroundColor: cBg,
-      // Đã thay Column thành Stack để đè cửa sổ nổi lên trên màn hình Quiz
-      body: Stack(
+      body: Column(
         children: [
-          // Lớp dưới: Giao diện chính của màn hình Quiz
-          Column(
-            children: [
-              _buildTopBar(themeColor),
-              Expanded(
-                child: FadeTransition(
-                  opacity: _fadeIn,
-                  child: SlideTransition(
-                    position: _slideUp,
-                    child: isDesktop
-                        ? _buildDesktopLayout(themeColor, size)
-                        : _buildMobileLayout(themeColor),
-                  ),
-                ),
+          _buildTopBar(themeColor),
+          Expanded(
+            child: FadeTransition(
+              opacity: _fadeIn,
+              child: SlideTransition(
+                position: _slideUp,
+                child: isDesktop
+                    ? _buildDesktopLayout(themeColor, size)
+                    : _buildMobileLayout(themeColor),
               ),
-            ],
-          ),
-          
-          // Lớp trên cùng: Cửa sổ sơ đồ tư duy đa nhiệm
-          FloatingConceptMap(
-            notebookId: widget.notebookId,
-            username: widget.username,
+            ),
           ),
         ],
       ),
     );
   }
-  
 
   Widget _buildTopBar(Color themeColor) {
     return Container(
@@ -915,7 +901,7 @@ class _QuizScreenState extends State<QuizScreen> with TickerProviderStateMixin {
               children: [
                 Builder(
                   builder: (context) {
-                    if (type == 'multiple_choice' || type == 'true_false') {
+                    if (type == 'multiple_choice') {
                       return Column(
                         children: List<Widget>.from((q['options'] as List).map((opt) {
                           final String optText = opt.toString();
@@ -938,6 +924,135 @@ class _QuizScreenState extends State<QuizScreen> with TickerProviderStateMixin {
                       );
                     } 
                     
+                    // 🚀 GIAO DIỆN ĐÚNG SAI 2 CỘT MỚI CHUẨN THI THPT (BÊN PHẢI MỆNH ĐỀ)
+                    else if (type == 'true_false') {
+                      List<dynamic> tfOptions = q['options'] ?? [];
+                      String currentAnsStr = _selectedAnswers[index] ?? "";
+                      List<String> currentSelections = currentAnsStr.split("|");
+                      if (currentSelections.length < tfOptions.length) {
+                        List<String> newSelections = List.filled(tfOptions.length, "");
+                        for(int i = 0; i < currentSelections.length; i++) {
+                          if (i < tfOptions.length) newSelections[i] = currentSelections[i];
+                        }
+                        currentSelections = newSelections;
+                      }
+                      
+                      String correctAnsStr = q['answer']?.toString() ?? "";
+                      List<String> correctAnswers = correctAnsStr.split("|");
+
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          // Tiêu đề 2 cột Đ - S
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8, right: 12),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                SizedBox(width: 36, child: const Center(child: Text("Đ", style: TextStyle(fontWeight: FontWeight.w900, color: cMintDark, fontSize: 16)))),
+                                const SizedBox(width: 12),
+                                SizedBox(width: 36, child: const Center(child: Text("S", style: TextStyle(fontWeight: FontWeight.w900, color: cCoral, fontSize: 16)))),
+                              ]
+                            )
+                          ),
+                          ...List.generate(tfOptions.length, (optIndex) {
+                            String optText = tfOptions[optIndex].toString();
+                            String myChoice = currentSelections[optIndex]; 
+                            String correctChoice = optIndex < correctAnswers.length ? correctAnswers[optIndex] : "";
+                            
+                            bool isCorrectRow = _isFinished && myChoice.isNotEmpty && myChoice.toLowerCase() == correctChoice.toLowerCase();
+                            bool isWrongRow = _isFinished && myChoice.isNotEmpty && myChoice.toLowerCase() != correctChoice.toLowerCase();
+                            bool isMissedRow = _isFinished && myChoice.isEmpty;
+
+                            return Container(
+                              margin: const EdgeInsets.only(bottom: 12),
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                              decoration: BoxDecoration(
+                                color: _isFinished 
+                                    ? (isCorrectRow ? cMint.withOpacity(0.1) : (isWrongRow || isMissedRow ? cCoral.withOpacity(0.1) : cCardTinted))
+                                    : cCardTinted,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: _isFinished
+                                      ? (isCorrectRow ? cMint : (isWrongRow || isMissedRow ? cCoral : cBorder))
+                                      : cBorder,
+                                ),
+                              ),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text("${String.fromCharCode(65 + optIndex)}. $optText", style: const TextStyle(fontSize: 14.5, color: cDark, fontWeight: FontWeight.w600, height: 1.4)),
+                                        if (_isFinished && (isWrongRow || isMissedRow)) ...[
+                                          const SizedBox(height: 6),
+                                          Text("Đáp án đúng: $correctChoice", style: const TextStyle(color: cCoral, fontWeight: FontWeight.bold, fontSize: 12)),
+                                        ]
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 16),
+                                  // Nút chọn ĐÚNG
+                                  GestureDetector(
+                                    onTap: () {
+                                      if (!_isFinished) {
+                                        setState(() {
+                                          currentSelections[optIndex] = "Đúng";
+                                          _selectedAnswers[index] = currentSelections.join("|");
+                                        });
+                                      }
+                                    },
+                                    child: Container(
+                                      width: 36, height: 36,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: myChoice == "Đúng" ? cMintDark : Colors.transparent,
+                                        border: Border.all(color: myChoice == "Đúng" ? cMintDark : cBorder, width: 2),
+                                      ),
+                                      child: Center(
+                                        child: Text("Đ", style: TextStyle(
+                                          color: myChoice == "Đúng" ? Colors.white : cTextLight,
+                                          fontWeight: FontWeight.bold,
+                                        )),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  // Nút chọn SAI
+                                  GestureDetector(
+                                    onTap: () {
+                                      if (!_isFinished) {
+                                        setState(() {
+                                          currentSelections[optIndex] = "Sai";
+                                          _selectedAnswers[index] = currentSelections.join("|");
+                                        });
+                                      }
+                                    },
+                                    child: Container(
+                                      width: 36, height: 36,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: myChoice == "Sai" ? cCoral : Colors.transparent,
+                                        border: Border.all(color: myChoice == "Sai" ? cCoral : cBorder, width: 2),
+                                      ),
+                                      child: Center(
+                                        child: Text("S", style: TextStyle(
+                                          color: myChoice == "Sai" ? Colors.white : cTextLight,
+                                          fontWeight: FontWeight.bold,
+                                        )),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          })
+                        ],
+                      );
+                    }
+
                     else if (type == 'fill_in_blank') {
                       List<dynamic> dragOptions = q['options'] ?? [];
                       List<String> parts = q['question'].toString().split("___");
@@ -1083,72 +1198,73 @@ class _QuizScreenState extends State<QuizScreen> with TickerProviderStateMixin {
                 ),
 
                 if (_isFinished) ...[
-                  Padding(
-                    padding: const EdgeInsets.only(top: 15.0),
-                    child: Builder(
-                      builder: (context) {
-                        bool isCorrect = false;
+                  if (type != 'true_false')
+                    Padding(
+                      padding: const EdgeInsets.only(top: 15.0),
+                      child: Builder(
+                        builder: (context) {
+                          bool isCorrect = false;
 
-                        if (type == 'short_answer') {
-                          isCorrect = _aiShortAnswerResults[index] ?? false;
-                        } else {
-                          String userAnswer = (_selectedAnswers[index] ?? "").trim().toLowerCase().replaceAll(' | ', '|').replaceAll(' |', '|').replaceAll('| ', '|');
-                          String correctAnswer = (q['answer'] ?? "").toString().trim().toLowerCase().replaceAll(' | ', '|').replaceAll(' |', '|').replaceAll('| ', '|');
-                          isCorrect = userAnswer == correctAnswer;
-                        }
+                          if (type == 'short_answer') {
+                            isCorrect = _aiShortAnswerResults[index] ?? false;
+                          } else {
+                            String userAnswer = (_selectedAnswers[index] ?? "").trim().toLowerCase().replaceAll(' | ', '|').replaceAll(' |', '|').replaceAll('| ', '|');
+                            String correctAnswer = (q['answer'] ?? "").toString().trim().toLowerCase().replaceAll(' | ', '|').replaceAll(' |', '|').replaceAll('| ', '|');
+                            isCorrect = userAnswer == correctAnswer;
+                          }
 
-                        String displayAnswer = (q['answer'] ?? "").toString().replaceAll('|', ', ');
+                          String displayAnswer = (q['answer'] ?? "").toString().replaceAll('|', ', ');
 
-                        return Container(
-                          padding: const EdgeInsets.all(14),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(12),
-                            color: isCorrect ? cMint.withOpacity(0.12) : cCoral.withOpacity(0.1),
-                            border: Border.all(
-                              color: isCorrect ? cMint : cCoral,
-                              width: 1.5,
+                          return Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              color: isCorrect ? cMint.withOpacity(0.12) : cCoral.withOpacity(0.1),
+                              border: Border.all(
+                                color: isCorrect ? cMint : cCoral,
+                                width: 1.5,
+                              ),
                             ),
-                          ),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Icon(
-                                isCorrect ? Icons.check_circle_rounded : Icons.cancel_rounded,
-                                color: isCorrect ? cMintDark : cCoral,
-                                size: 22,
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      isCorrect 
-                                        ? (type == 'short_answer' ? "✅ Tuyệt vời! Giám khảo AI chấm bạn ĐÚNG Ý." : "✅ Tuyệt vời! Bạn đã chọn chính xác.")
-                                        : "❌ Đáp án đúng là: $displayAnswer",
-                                      style: TextStyle(
-                                        color: isCorrect ? cMintDark : cCoral,
-                                        fontWeight: FontWeight.w700,
-                                        fontSize: 14,
-                                        height: 1.4,
-                                      ),
-                                    ),
-                                    if (type == 'short_answer' || type == 'fill_in_blank') ...[
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        "Câu trả lời của bạn: ${(_selectedAnswers[index] ?? 'Bỏ trống').replaceAll('|', ', ')}",
-                                        style: TextStyle(color: cTextLight.withOpacity(0.8), fontStyle: FontStyle.italic, fontSize: 13),
-                                      ),
-                                    ],
-                                  ],
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(
+                                  isCorrect ? Icons.check_circle_rounded : Icons.cancel_rounded,
+                                  color: isCorrect ? cMintDark : cCoral,
+                                  size: 22,
                                 ),
-                              ),
-                            ],
-                          ),
-                        );
-                      }
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        isCorrect 
+                                          ? (type == 'short_answer' ? "✅ Tuyệt vời! Giám khảo AI chấm bạn ĐÚNG Ý." : "✅ Tuyệt vời! Bạn đã chọn chính xác.")
+                                          : "❌ Đáp án đúng là: $displayAnswer",
+                                        style: TextStyle(
+                                          color: isCorrect ? cMintDark : cCoral,
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 14,
+                                          height: 1.4,
+                                        ),
+                                      ),
+                                      if (type == 'short_answer' || type == 'fill_in_blank') ...[
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          "Câu trả lời của bạn: ${(_selectedAnswers[index] ?? 'Bỏ trống').replaceAll('|', ', ')}",
+                                          style: TextStyle(color: cTextLight.withOpacity(0.8), fontStyle: FontStyle.italic, fontSize: 13),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }
+                      ),
                     ),
-                  ),
 
                   if (q['explanation'] != null && q['explanation'].toString().isNotEmpty)
                     Container(
@@ -1328,4 +1444,4 @@ class _FloatingSubmit extends StatelessWidget {
       child: const Icon(Icons.send_rounded, color: cCard, size: 24),
     );
   }
-} 
+}

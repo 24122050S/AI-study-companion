@@ -80,11 +80,44 @@ async def get_dashboard(user_id: str):
 
 @router.get("/api/recommend/{user_id}")
 async def get_recommendation(user_id: str):
-    res = supabase.table("history").select("percentage").eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
-    if not res.data: return {"recommendation": "Chào mừng bạn! Hãy làm bài Quiz đầu tiên nhé."}
-    avg_score = sum([r['percentage'] for r in res.data]) / len(res.data)
-    try: return {"recommendation": call_groq(f"Nhận xét 2 câu cho học sinh đạt {avg_score}%\nVí dụ: Bạn đang làm tốt mảng lý thuyết. Hãy chú ý các câu hỏi bài tập áp dụng thực tế nhé.").strip()}
-    except: return {"recommendation": "Chưa thể đưa ra nhận xét lúc này."}
+    # 1. Kéo lịch sử 10 bài làm gần nhất kèm theo Tên chủ đề (Topic)
+    res = supabase.table("history").select("topic, percentage, created_at").eq("user_id", user_id).order("created_at", desc=True).limit(10).execute()
+    
+    if not res.data: 
+        return {"recommendation": "Chào mừng bạn! Hãy làm bài Quiz đầu tiên để AI có thể phân tích và định hướng lộ trình học nhé."}
+    
+    # 2. Tổng hợp dữ liệu thành mảng văn bản cho AI dễ đọc
+    history_summary = []
+    for r in res.data:
+        history_summary.append(f"- Chủ đề '{r['topic']}': Đạt {r['percentage']}%")
+        
+    history_text = "\n".join(history_summary)
+    
+    # 3. Kịch bản Prompt Ép AI trở thành Gia sư Chiến lược
+    prompt = f"""
+    Bạn là một Gia sư AI chuyên tư vấn chiến lược học tập.
+    Dưới đây là lịch sử điểm số 10 bài kiểm tra gần nhất của học sinh:
+    
+    {history_text}
+    
+    Dựa vào dữ liệu trên, hãy đưa ra một GỢI Ý ĐỊNH HƯỚNG CÁ NHÂN HÓA theo cấu trúc block rõ ràng:
+    
+    1. **Đánh giá phong độ:** (1 câu ngắn gọn nhìn nhận tổng quan tiến độ).
+    2. **Ưu tiên học trước:** (Chỉ đích danh các CHỦ ĐỀ có điểm số thấp dưới 80%. Khuyên học sinh ôn lại lý thuyết phần này).
+    3. **Cần luyện tập thêm:** (Chỉ đích danh các CHỦ ĐỀ có điểm ở mức khá 80-90% cần làm thêm bài tập để tối ưu thời gian).
+    
+    ⛔ YÊU CẦU NGHIÊM NGẶT:
+    - Viết ngắn gọn, súc tích, truyền động lực. (Tối đa 150 chữ).
+    - KHÔNG tự bịa ra các chủ đề không có trong lịch sử.
+    """
+    
+    try: 
+        # Gọi mô hình mạnh để phân tích logic tốt hơn
+        ai_advice = call_groq(prompt, temp=0.3)
+        return {"recommendation": ai_advice.strip()}
+    except Exception as e: 
+        print(f"Lỗi Recommendation: {e}")
+        return {"recommendation": "Hệ thống AI đang tổng hợp dữ liệu. Bạn hãy quay lại sau ít phút nhé!"}
 
 @router.post("/api/notes")
 async def add_note(request: NoteRequest):

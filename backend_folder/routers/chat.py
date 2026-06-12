@@ -48,7 +48,7 @@ async def chat_with_ai(request: ChatRequest):
         
         # Kiểm tra xem có đang bật chế độ học theo Roadmap không
         if getattr(request, "focus_topic", None):
-            search_query = f"Nội dung trọng tâm thuộc chủ đề: {request.focus_topic}. {request.message}"
+            search_query = f"Nội dung trọng tâm: {request.focus_topic}. {request.message}"
 
         context_text, references_list = get_active_context(search_query, request.user_id, str(request.notebook_id), k_needed=chunk_size, return_refs=True)
         
@@ -58,26 +58,33 @@ async def chat_with_ai(request: ChatRequest):
             return StreamingResponse(quick_reply(), media_type="text/plain")
 
         # ==========================================
-        # 🚀 BƯỚC 4.2: DẶN DÒ AI VÀO "KỶ LUẬT"
+        # 🚀 BƯỚC 4.2: DẶN DÒ AI VÀO "KỶ LUẬT" (ĐÃ GỘP TẤT CẢ YÊU CẦU)
         # ==========================================
         system_instruction = "Bạn là Giáo sư AI thông minh và tận tâm."
         
-        # Nếu đang tóm tắt, dặn AI viết siêu chi tiết
-        if is_summarizing:
-            system_instruction += " BẠN ĐANG ĐƯỢC YÊU CẦU TÓM TẮT/TỔNG HỢP KIẾN THỨC. Tuyệt đối KHÔNG viết ngắn. Hãy viết bài phân tích CỰC KỲ CHI TIẾT, ĐẦY ĐỦ VÀ SÂU SẮC dài ít nhất 500 chữ. Bắt buộc chia thành các phần rõ ràng (Mở đầu, Phân tích chi tiết các ý chính, Kết luận) và trình bày bằng Markdown (In đậm, Bullet points) để văn bản dễ đọc."
-            
+        # YÊU CẦU 1: Ép kỷ luật Lộ trình & Số trang
         if getattr(request, "focus_topic", None):
-            system_instruction += f" HIỆN TẠI SINH VIÊN ĐANG HỌC GIAI ĐOẠN: '{request.focus_topic}'. TUYỆT ĐỐI CHỈ trả lời và hướng dẫn các kiến thức xoay quanh phần này, KHÔNG ĐƯỢC lan man sang chủ đề khác."
+            system_instruction += f" HIỆN TẠI SINH VIÊN ĐANG HỌC THEO LỘ TRÌNH: '{request.focus_topic}'. LỆNH BẮT BUỘC: Bạn CHỈ ĐƯỢC PHÉP đọc và sử dụng dữ liệu nằm đúng trong GIỚI HẠN SỐ TRANG được chỉ định. NẾU thông tin ở trang khác, BẠN PHẢI BỎ QUA HOÀN TOÀN."
+            
+        # YÊU CẦU 2: Quy tắc Tóm tắt siêu chi tiết & Markdown của bạn
+        if is_summarizing:
+            system_instruction += """ BẠN ĐANG ĐƯỢC YÊU CẦU TÓM TẮT TÀI LIỆU. Hãy tuân thủ NGHIÊM NGẶT các quy tắc sau:
+            1. BẮT BUỘC TÓM TẮT THEO CẤU TRÚC CHƯƠNG/MỤC (Dựa trên các phần có trong tài liệu). TUYỆT ĐỐI không tóm tắt lố qua số trang quy định nếu có giới hạn.
+            2. Mỗi mục lớn phải có Tiêu đề rõ ràng (Sử dụng Markdown Heading như ## Chương 1:..., ## Mục 1:...).
+            3. Dưới mỗi Tiêu đề, phải phân tích CỰC KỲ CHI TIẾT các khái niệm, định nghĩa và ý chính. Tuyệt đối KHÔNG viết ngắn.
+            4. Sử dụng gạch đầu dòng (Bullet points) và In đậm (**text**) để làm nổi bật từ khóa quan trọng.
+            """
             
         prompt = f"""
-        TÀI LIỆU HỌC TẬP THUỘC VỀ USER {request.user_id}: 
+        TÀI LIỆU HỌC TẬP (Thuộc về user {request.user_id}, mỗi đoạn đều có ghi chú số trang ở đầu): 
         {context_text}
         
-        CÂU HỎI CỦA HỌC SINH: {request.message}
+        YÊU CẦU CỦA HỌC SINH: {request.message}
         
         ⛔ LƯU Ý SỐNG CÒN VÀ KỶ LUẬT:
-        1. NẾU MỤC TÀI LIỆU KHÔNG CÓ THÔNG TIN LIÊN QUAN, BẠN BẮT BUỘC PHẢI TRẢ LỜI ĐÚNG CÂU NÀY: "Rất tiếc, thông tin này không có trong tài liệu bạn đã tải lên dự án này."
-        2. TUYỆT ĐỐI KHÔNG ĐƯỢC dùng kiến thức bên ngoài (ngoài tài liệu) để trả lời.
+        1. KIỂM SOÁT PHẠM VI TRANG: Nếu học sinh đang học theo Lộ trình bị giới hạn phạm vi trang, BẠN CHỈ ĐƯỢC LẤY THÔNG TIN TỪ CÁC TRANG TRONG GIỚI HẠN ĐÓ. Nhắm mắt phớt lờ mọi thông tin từ các trang khác.
+        2. CÂU TRẢ LỜI BẮT BUỘC (YÊU CẦU CŨ): NẾU MỤC TÀI LIỆU KHÔNG CÓ THÔNG TIN LIÊN QUAN HOẶC NẰM NGOÀI PHẠM VI TRANG CHO PHÉP, BẠN BẮT BUỘC PHẢI TRẢ LỜI ĐÚNG CÂU NÀY: "Rất tiếc, thông tin này không có trong tài liệu bạn đã tải lên dự án này."
+        3. TUYỆT ĐỐI KHÔNG ĐƯỢC dùng kiến thức bên ngoài (ngoài tài liệu) để trả lời.
         
         ✅ YÊU CẦU TRÌNH BÀY:
         1. Chỉ trả lời dựa 100% vào TÀI LIỆU.
@@ -115,12 +122,13 @@ async def chat_with_ai(request: ChatRequest):
                         continue 
                         
             if not success:
-                yield f"\n[Hệ thống đang quá tải. Lỗi: {last_error}]"
+                yield f"\n[Hệ thống đang quá tải Token. Đã tự động thử {len(keys_to_try)} API Key và {len(models_to_try)} Mô hình nhưng đều thất bại. Chi tiết: {last_error}]"
                 return
 
             if full_ai_response and references_list:
                 filtered_refs = [ref for ref in references_list if f"[{ref['id']}]" in full_ai_response]
                 final_refs = filtered_refs if filtered_refs else references_list
+                
                 metadata_marker = f"|||METADATA|||{json.dumps(final_refs)}"
                 yield metadata_marker
                 full_ai_response += metadata_marker

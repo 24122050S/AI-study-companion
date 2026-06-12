@@ -850,16 +850,20 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
           List<dynamic> tasks = selectedStage['tasks'] ?? [];
           int minutes = int.tryParse(timeStr.replaceAll(RegExp(r'[^0-9]'), '')) ?? 30;
           
+          String taskList = tasks.join(", ");
+          // 🚀 ĐÃ SỬA: Ép cả tên Chủ đề + Giới hạn nhiệm vụ (trang) vào Focus Topic
+          String detailedTopic = "$title (Phạm vi bắt buộc: $taskList)";
+          
           final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('roadmap_focus_topic_${widget.notebookId}', title);
+          await prefs.setString('roadmap_focus_topic_${widget.notebookId}', detailedTopic);
           await prefs.setInt('roadmap_remaining_seconds_${widget.notebookId}', minutes * 60);
 
           setState(() {
-            _focusTopic = title;
+            _focusTopic = detailedTopic;
             _roadmapRemainingSeconds = minutes * 60;
           });
           _startRoadmapTimerLoop();
-          String taskList = tasks.join(", ");
+          
           _chatController.text = "Hãy làm gia sư dạy tôi chủ đề: $title. Bắt đầu bằng việc hướng dẫn tôi thực hiện các nhiệm vụ sau: $taskList";
           _sendChatMessage();
         } else if (_focusTopic != null) {
